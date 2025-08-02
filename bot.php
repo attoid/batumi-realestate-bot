@@ -1,5 +1,4 @@
 <?php
-echo "Бот живой!";
 
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
