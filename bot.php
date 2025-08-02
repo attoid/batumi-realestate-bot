@@ -1,7 +1,8 @@
 <?php
-$token = '8242406499:AAHpvI2DwNc1qMhw4qMb6NJ_vjebU1j230k';
-$openai_key = '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';
+$token = getenv('TELEGRAM_TOKEN');
+$openai_key = getenv('OPENAI_API_KEY');
 
+// остальной код — как есть (функция ask_gpt и обработка сообщений)
 
 $content = file_get_contents("php://input");
 $update = json_decode($content, true);
