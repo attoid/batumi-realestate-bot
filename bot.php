@@ -1,4 +1,7 @@
 <?php
+error_log("Telegram token: " . getenv('TELEGRAM_TOKEN'));
+error_log("OpenAI key: " . getenv('OPENAI_API_KEY'));
+
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
