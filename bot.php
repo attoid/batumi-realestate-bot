@@ -47,20 +47,37 @@ $apartments = [
     ['этаж' => 6, 'номер' => 721, 'площадь' => 43.0, 'вид' => 'Море&Горы', 'цена_м2' => 1900, 'общая_сумма' => 81700, 'статус' => 'Свободный'],
 ];
 
-// Получить историю чата пользователя
+// === Статистика по базе ===
+
+// Логика: считаем студией всё, что до 40 м². Меняй по своему критерию!
+$studio_count = 0;
+$studio_min_price = null;
+$studio_max_price = null;
+
+foreach ($apartments as $a) {
+    if ($a['площадь'] <= 40) { // если студия — площадь до 40 м²
+        $studio_count++;
+        if (is_null($studio_min_price) || $a['общая_сумма'] < $studio_min_price) $studio_min_price = $a['общая_сумма'];
+        if (is_null($studio_max_price) || $a['общая_сумма'] > $studio_max_price) $studio_max_price = $a['общая_сумма'];
+    }
+}
+
+$base_stats = "В базе сейчас " . count($apartments) . " квартир, из них студий — $studio_count, цены студий: от \$$studio_min_price до \$$studio_max_price.";
+
+
+// ===== ФУНКЦИИ ИСТОРИИ ЧАТА =====
 function get_chat_history($chat_id) {
     $file = __DIR__ . "/history/{$chat_id}.json";
     if (!file_exists($file)) return [];
     return json_decode(file_get_contents($file), true);
 }
 
-// Сохранить историю чата пользователя
 function save_chat_history($chat_id, $history) {
     if (!file_exists(__DIR__ . '/history')) mkdir(__DIR__ . '/history', 0777, true);
     file_put_contents(__DIR__ . "/history/{$chat_id}.json", json_encode($history, JSON_UNESCAPED_UNICODE));
 }
 
-// GPT функция: принимает МАССИВ сообщений!
+// ===== GPT ФУНКЦИЯ =====
 function ask_gpt($messages, $openai_key) {
     $data = [
         "model" => "gpt-4o",
@@ -72,7 +89,7 @@ function ask_gpt($messages, $openai_key) {
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         "Content-Type: application/json",
-        "Authorization: Bearer $openai_key"
+        "Authorization: " . "Bearer $openai_key"
     ]);
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
@@ -91,18 +108,20 @@ if (isset($update["message"])) {
     $chat_id = $update["message"]["chat"]["id"];
     $user_message = trim($update["message"]["text"]);
 
-    // 1. Получаем историю
+    // 1. История чата
     $history = get_chat_history($chat_id);
 
-    // 2. Формируем system-промпт и (по желанию) добавляем БАЗУ квартир:
+    // 2. Формируем инфу по базе (можно вынести отдельной переменной)
     $base_info = "";
     foreach ($apartments as $a) {
         $base_info .= "Этаж: {$a['этаж']}, №: {$a['номер']}, Площадь: {$a['площадь']} м², Вид: {$a['вид']}, Цена/м²: \${$a['цена_м2']}, Всего: \${$a['общая_сумма']}, Статус: {$a['статус']}\n";
     }
+
+    // 3. Новый system-промпт (твой супергеройский стиль)
     $messages = [
         [
             "role" => "system",
-        "content" =>
+            "content" =>
 "Ты — умный, дерзкий и харизматичный AI-консультант Сергея Корнаухова, 29 лет, брокера по недвижимости в Батуми (опыт с ноября 2023). У тебя суперспособности:  
 — быстро выяснять суть запроса  
 — вежливо отсеивать лишнее  
@@ -117,29 +136,29 @@ if (isset($update["message"])) {
 — всегда спрашиваешь только то, что действительно нужно для идеального подбора: площадь, бюджет, район, нужна ли рассрочка, сколько комнат, первый взнос, комфортный платёж  
 — если собеседник сбивается или троллит — отвечаешь с юмором, но не спускаешься до балагана  
 — знаешь базу квартир (см. ниже), на их основе даёшь предложения  
-Твоя цель — сделать выбор недвижимости лёгким, а диалог запоминающимся и полезным!"
-" 
-Вот база квартир:\n$base_info"
+Твоя цель — сделать выбор недвижимости лёгким, а диалог запоминающимся и полезным!
+Вот база квартир:
+$base_info"
         ]
     ];
 
-    // 3. Добавляем историю (user/assistant)
+    // 4. История чата (user/assistant)
     foreach ($history as $msg) {
         $messages[] = $msg;
     }
 
-    // 4. Добавляем новое сообщение пользователя
+    // 5. Добавляем новое сообщение пользователя
     $messages[] = ["role" => "user", "content" => $user_message];
 
-    // 5. GPT-запрос
+    // 6. GPT-запрос
     $answer = ask_gpt($messages, $openai_key);
 
-    // 6. Сохраняем историю
+    // 7. Сохраняем историю (добавили новые сообщения)
     $history[] = ["role" => "user", "content" => $user_message];
     $history[] = ["role" => "assistant", "content" => $answer];
     save_chat_history($chat_id, $history);
 
-    // 7. Ответ пользователю
+    // 8. Отправляем ответ пользователю
     file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query([
         'chat_id' => $chat_id,
         'text' => $answer
