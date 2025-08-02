@@ -1,9 +1,8 @@
 <?php
-error_log("Telegram token: " . getenv('TELEGRAM_TOKEN'));
-error_log("OpenAI key: " . getenv('OPENAI_API_KEY'));
-
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/error.log'); // Лог ошибок в файл error.log
 
 $token = getenv('TELEGRAM_TOKEN');
 $openai_key = getenv('OPENAI_API_KEY');
@@ -11,7 +10,7 @@ $openai_key = getenv('OPENAI_API_KEY');
 $content = file_get_contents("php://input");
 $update = json_decode($content, true);
 
-// Функция общения с OpenAI с логированием ответа
+// Функция общения с OpenAI с логированием
 function ask_gpt($prompt, $openai_key) {
     $data = [
         "model" => "gpt-3.5-turbo",
@@ -33,8 +32,11 @@ function ask_gpt($prompt, $openai_key) {
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
     $result = curl_exec($ch);
 
-    // Логируем ответ OpenAI для отладки
-    file_put_contents('log.txt', date('Y-m-d H:i:s') . " " . $result . PHP_EOL, FILE_APPEND);
+    if (curl_errno($ch)) {
+        error_log("CURL error: " . curl_error($ch));
+    } else {
+        error_log("CURL result: " . $result);
+    }
 
     curl_close($ch);
     $response = json_decode($result, true);
@@ -97,4 +99,3 @@ if (isset($update["callback_query"])) {
     ];
     file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query($params));
 }
-?>
