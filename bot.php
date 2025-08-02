@@ -1,4 +1,7 @@
 <?php
+error_log("TELEGRAM_TOKEN: " . getenv('TELEGRAM_TOKEN'));
+error_log("OPENAI_API_KEY: " . getenv('OPENAI_API_KEY'));
+
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
@@ -35,13 +38,14 @@ function ask_gpt($prompt, $openai_key) {
     if (curl_errno($ch)) {
         error_log("CURL error: " . curl_error($ch));
     } else {
-        error_log("CURL result: " . $result);
+        error_log("OpenAI response: " . $result);
     }
 
     curl_close($ch);
     $response = json_decode($result, true);
     return $response['choices'][0]['message']['content'] ?? "Извините, не удалось получить ответ от ИИ.";
 }
+
 
 // ОБРАБОТКА СООБЩЕНИЙ
 if(isset($update["message"])) {
