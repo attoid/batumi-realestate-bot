@@ -1,105 +1,106 @@
 <?php
-error_log("TELEGRAM_TOKEN: " . getenv('TELEGRAM_TOKEN'));
-error_log("OPENAI_API_KEY: " . getenv('OPENAI_API_KEY'));
+// ====== ТВОЯ БАЗА КВАРТИР ======
+$apartments = [
+    [
+        'этаж' => -2, 'номер' => '009', 'площадь' => 38.0, 'вид' => 'Море',
+        'цена_м2' => 1200, 'общая_сумма' => 52800, 'статус' => 'Свободный'
+    ],
+    [
+        'этаж' => -1, 'номер' => '101', 'площадь' => 105.8, 'вид' => 'Море',
+        'цена_м2' => 1200, 'общая_сумма' => 155875, 'статус' => 'Свободный'
+    ],
+    [
+        'этаж' => -1, 'номер' => '102', 'площадь' => 48.6, 'вид' => 'Море',
+        'цена_м2' => 1200, 'общая_сумма' => 58440, 'статус' => 'Свободный'
+    ],
+    [
+        'этаж' => -1, 'номер' => '104', 'площадь' => 47.6, 'вид' => 'Море',
+        'цена_м2' => 1200, 'общая_сумма' => 57120, 'статус' => 'Свободный'
+    ],
+    [
+        'этаж' => 1, 'номер' => '201', 'площадь' => 67.8, 'вид' => 'Море',
+        'цена_м2' => 1250, 'общая_сумма' => 84750, 'статус' => 'Свободный'
+    ],
+    [
+        'этаж' => 1, 'номер' => '202', 'площадь' => 45.2, 'вид' => 'Море',
+        'цена_м2' => 1250, 'общая_сумма' => 56500, 'статус' => 'Свободный'
+    ],
+    // ...Добавь остальные квартиры!
+];
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('log_errors', 1);
-ini_set('error_log', __DIR__ . '/error.log'); // Лог ошибок в файл error.log
+// ====== ФУНКЦИЯ ФИЛЬТРАЦИИ ======
+function searchApartments($params, $apartments) {
+    $offers = [];
+    foreach ($apartments as $apt) {
+        if ($apt['статус'] !== 'Свободный') continue;
+        if (isset($params['view']) && mb_strtolower($params['view']) !== mb_strtolower($apt['вид'])) continue;
+        if (isset($params['area_min']) && $apt['площадь'] < $params['area_min']) continue;
+        if (isset($params['area_max']) && $apt['площадь'] > $params['area_max']) continue;
+        $offers[] = $apt;
+    }
+    return $offers;
+}
 
+// ====== ФУНКЦИИ ДЛЯ СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЯ ======
+function getUserState($chat_id) {
+    $file = __DIR__ . "/user_states/{$chat_id}.json";
+    if (!file_exists($file)) return [];
+    return json_decode(file_get_contents($file), true);
+}
+function saveUserState($chat_id, $state) {
+    if (!file_exists(__DIR__ . '/user_states')) mkdir(__DIR__ . '/user_states');
+    file_put_contents(__DIR__ . "/user_states/{$chat_id}.json", json_encode($state));
+}
+
+// ====== ОСНОВНОЙ КОД ======
 $token = getenv('TELEGRAM_TOKEN');
-$openai_key = getenv('OPENAI_API_KEY');
-
 $content = file_get_contents("php://input");
 $update = json_decode($content, true);
 
-// Функция общения с OpenAI с логированием
-function ask_gpt($prompt, $openai_key) {
-    $data = [
-        "model" => "gpt-3.5-turbo",
-        "messages" => [
-            ["role" => "system", "content" => "Ты профессиональный агент по недвижимости в Батуми. Отвечай просто, конкретно, по делу, как опытный консультант."],
-            ["role" => "user", "content" => $prompt]
-        ],
-        "max_tokens" => 400,
-        "temperature" => 0.4
-    ];
-
-    $ch = curl_init("https://api.openai.com/v1/chat/completions");
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "Authorization: Bearer $openai_key"
-    ]);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    $result = curl_exec($ch);
-
-    if (curl_errno($ch)) {
-        error_log("CURL error: " . curl_error($ch));
-    } else {
-        error_log("OpenAI response: " . $result);
-    }
-
-    curl_close($ch);
-    $response = json_decode($result, true);
-    return $response['choices'][0]['message']['content'] ?? "Извините, не удалось получить ответ от ИИ.";
-}
-
-
-// ОБРАБОТКА СООБЩЕНИЙ
-if(isset($update["message"])) {
+if (isset($update["message"])) {
     $chat_id = $update["message"]["chat"]["id"];
     $text = trim($update["message"]["text"]);
+    $user_state = getUserState($chat_id);
 
-    if ($text == '/start') {
-        $reply = "Привет! Это Сергей Корнаухов, буду рад вам помочь подобрать квартиру в Батуми или бесплатно проконсультировать. Какой у вас запрос?\n\nТакже приглашаю вас на мой YouTube-канал с полезной информацией:\nhttps://youtube.com/@skornaukhovv";
-        $keyboard = [
-            'inline_keyboard' => [
-                [
-                    ['text' => 'Квартира', 'callback_data' => 'type_apartment'],
-                    ['text' => 'Апартаменты', 'callback_data' => 'type_aparthotel'],
-                ],
-                [
-                    ['text' => 'Рассрочка', 'callback_data' => 'installment'],
-                    ['text' => 'Инвестиции', 'callback_data' => 'investment'],
-                ]
-            ]
-        ];
-        $data = [
-            'chat_id' => $chat_id,
-            'text' => $reply,
-            'reply_markup' => json_encode($keyboard)
-        ];
-        file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query($data));
+    if ($text == '/start' || empty($user_state)) {
+        $user_state = ['step' => 1];
+        saveUserState($chat_id, $user_state);
+        $reply = "Привет! Это Сергей Корнаухов, я брокер по недвижимости в Батуми. Давай подберем тебе лучшую квартиру! Для себя или для сдачи?";
     } else {
-        $answer = ask_gpt($text, $openai_key);
-        $data = [
-            'chat_id' => $chat_id,
-            'text' => $answer
-        ];
-        file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query($data));
+        switch ($user_state['step']) {
+            case 1:
+                $user_state['purpose'] = $text;
+                $reply = "Какой вид интересует — море или город?";
+                $user_state['step'] = 2;
+                break;
+            case 2:
+                $user_state['view'] = $text;
+                $reply = "Минимальная площадь? (например: 30)";
+                $user_state['step'] = 3;
+                break;
+            case 3:
+                $user_state['area_min'] = (float)$text;
+                $reply = "Максимальная площадь?";
+                $user_state['step'] = 4;
+                break;
+            case 4:
+                $user_state['area_max'] = (float)$text;
+                $offers = searchApartments($user_state, $apartments);
+                if (count($offers) === 0) {
+                    $reply = "К сожалению, подходящих вариантов нет. Могу подобрать что-то индивидуально, напишите ваши пожелания!";
+                } else {
+                    $reply = "Вот подходящие варианты:\n";
+                    foreach (array_slice($offers, 0, 3) as $of) {
+                        $reply .= "Этаж: {$of['этаж']}, №: {$of['номер']}, Площадь: {$of['площадь']} м², Вид: {$of['вид']}, Цена/м²: \${$of['цена_м2']}, Всего: \${$of['общая_сумма']}\n";
+                    }
+                }
+                $user_state = []; // Сбросить состояние для нового запроса
+                break;
+        }
+        saveUserState($chat_id, $user_state);
     }
-}
-
-// ОБРАБОТКА КНОПОК
-if (isset($update["callback_query"])) {
-    $chat_id = $update["callback_query"]["message"]["chat"]["id"];
-    $data = $update["callback_query"]["data"];
-    if ($data == 'type_apartment') {
-        $text = "Вы выбрали: Квартира. Расскажите, какой район или бюджет интересует?";
-    } elseif ($data == 'type_aparthotel') {
-        $text = "Вы выбрали: Апартаменты. Готов рассказать про лучшие предложения!";
-    } elseif ($data == 'installment') {
-        $text = "Рассрочка: расскажу все нюансы, напишите желаемый первый взнос или срок.";
-    } elseif ($data == 'investment') {
-        $text = "Инвестиции: могу подобрать объекты с высокой доходностью.";
-    } else {
-        $text = "Выберите интересующий пункт:";
-    }
-    $params = [
+    file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query([
         'chat_id' => $chat_id,
-        'text' => $text
-    ];
-    file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query($params));
+        'text' => $reply
+    ]));
 }
