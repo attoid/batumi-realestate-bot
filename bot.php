@@ -1,4 +1,7 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 $token = getenv('TELEGRAM_TOKEN');
 $openai_key = getenv('OPENAI_API_KEY');
 
