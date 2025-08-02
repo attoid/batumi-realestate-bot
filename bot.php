@@ -46,7 +46,6 @@ $apartments = [
     ['этаж' => 6, 'номер' => 720, 'площадь' => 59.0, 'вид' => 'Море&Горы', 'цена_м2' => 1900, 'общая_сумма' => 112090, 'статус' => 'Свободный'],
     ['этаж' => 6, 'номер' => 721, 'площадь' => 43.0, 'вид' => 'Море&Горы', 'цена_м2' => 1900, 'общая_сумма' => 81700, 'статус' => 'Свободный'],
 ];
-// ===== ФУНКЦИЯ GPT =====
 function ask_gpt($prompt, $openai_key) {
     $data = [
         "model" => "gpt-4o",
@@ -68,10 +67,8 @@ function ask_gpt($prompt, $openai_key) {
         ],
         "max_tokens" => 400,
         "temperature" => 0.5
-    ];
-    // ... остальной код функции
+    ]; // вот тут закрывается $data
 
-    ];
     $ch = curl_init("https://api.openai.com/v1/chat/completions");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
