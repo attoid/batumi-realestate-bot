@@ -5,15 +5,13 @@ ini_set('display_errors', 1);
 $token = getenv('TELEGRAM_TOKEN');
 $openai_key = getenv('OPENAI_API_KEY');
 
-// остальной код — как есть (функция ask_gpt и обработка сообщений)
-
 $content = file_get_contents("php://input");
 $update = json_decode($content, true);
 
-// Функция общения с OpenAI
+// Функция общения с OpenAI с логированием ответа
 function ask_gpt($prompt, $openai_key) {
     $data = [
-        "model" => "gpt-3.5-turbo", // или gpt-4o если есть доступ
+        "model" => "gpt-3.5-turbo",
         "messages" => [
             ["role" => "system", "content" => "Ты профессиональный агент по недвижимости в Батуми. Отвечай просто, конкретно, по делу, как опытный консультант."],
             ["role" => "user", "content" => $prompt]
@@ -31,6 +29,10 @@ function ask_gpt($prompt, $openai_key) {
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
     $result = curl_exec($ch);
+
+    // Логируем ответ OpenAI для отладки
+    file_put_contents('log.txt', date('Y-m-d H:i:s') . " " . $result . PHP_EOL, FILE_APPEND);
+
     curl_close($ch);
     $response = json_decode($result, true);
     return $response['choices'][0]['message']['content'] ?? "Извините, не удалось получить ответ от ИИ.";
@@ -41,7 +43,6 @@ if(isset($update["message"])) {
     $chat_id = $update["message"]["chat"]["id"];
     $text = trim($update["message"]["text"]);
 
-    // Если команда /start
     if ($text == '/start') {
         $reply = "Здравствуйте! Я — Сергей Корнаухов, ваш агент по недвижимости в Батуми. Задайте вопрос или выберите интересующее направление:";
         $keyboard = [
@@ -63,7 +64,6 @@ if(isset($update["message"])) {
         ];
         file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query($data));
     } else {
-        // Любое другое сообщение отправляем в OpenAI!
         $answer = ask_gpt($text, $openai_key);
         $data = [
             'chat_id' => $chat_id,
@@ -73,7 +73,7 @@ if(isset($update["message"])) {
     }
 }
 
-// ОБРАБОТКА КНОПОК (ОСТАВЛЯЕМ как раньше)
+// ОБРАБОТКА КНОПОК
 if (isset($update["callback_query"])) {
     $chat_id = $update["callback_query"]["message"]["chat"]["id"];
     $data = $update["callback_query"]["data"];
