@@ -55,7 +55,7 @@ function parse_csv_to_apartments($csv_data) {
     $lines = explode("\n", trim($csv_data));
     $apartments = [];
     // Пропускаем заголовки (первые 4 строки)
-    for ($i = 4; $i < count($lines); $i++) {
+    for ($i = 1; $i < count($lines); $i++) {
         $line = trim($lines[$i]);
         if (empty($line)) continue;
         $data = str_getcsv($line);
