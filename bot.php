@@ -66,11 +66,84 @@ $base_stats = "В базе сейчас " . count($apartments) . " кварти�
 function get_chat_history($chat_id) {
     $file = __DIR__ . "/history/{$chat_id}.json";
     if (!file_exists($file)) return [];
-    return json_decode(file_get_contents($file), true);
+    $content = file_get_contents($file);
+    if ($content === false) return [];
+    $decoded = json_decode($content, true);
+    return $decoded === null ? [] : $decoded;
 }
+
 function save_chat_history($chat_id, $history) {
-    if (!file_exists(__DIR__ . '/history')) mkdir(__DIR__ . '/history', 0777, true);
-    file_put_contents(__DIR__ . "/history/{$chat_id}.json", json_encode($history, JSON_UNESCAPED_UNICODE));
+    $dir = __DIR__ . '/history';
+    if (!file_exists($dir)) {
+        if (!mkdir($dir, 0777, true)) {
+            error_log("Failed to create history directory");
+            return false;
+        }
+    }
+    $result = file_put_contents($dir . "/{$chat_id}.json", json_encode($history, JSON_UNESCAPED_UNICODE));
+    if ($result === false) {
+        error_log("Failed to save chat history for chat_id: $chat_id");
+        return false;
+    }
+    return true;
+}
+
+// ====== ФУНКЦИЯ ОТПРАВКИ СООБЩЕНИЯ ======
+function send_telegram_message($token, $chat_id, $text) {
+    $url = "https://api.telegram.org/bot$token/sendMessage";
+    $data = [
+        'chat_id' => $chat_id,
+        'text' => $text
+    ];
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    
+    $result = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($result === false || $http_code !== 200) {
+        error_log("Failed to send Telegram message: HTTP $http_code");
+        return false;
+    }
+    
+    return json_decode($result, true);
+}
+
+// ====== ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ ======
+function check_subscription($token, $channel, $user_id) {
+    $url = "https://api.telegram.org/bot$token/getChatMember";
+    $data = [
+        'chat_id' => $channel,
+        'user_id' => $user_id
+    ];
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url . '?' . http_build_query($data));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    
+    $result = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($result === false || $http_code !== 200) {
+        error_log("Failed to check subscription: HTTP $http_code");
+        return true; // В случае ошибки API пропускаем проверку
+    }
+    
+    $response = json_decode($result, true);
+    if (!isset($response["result"]["status"])) {
+        return true; // В случае неожиданного ответа пропускаем проверку
+    }
+    
+    $status = $response["result"]["status"];
+    return in_array($status, ["member", "administrator", "creator"]);
 }
 
 // ====== GPT ФУНКЦИЯ ======
@@ -81,6 +154,7 @@ function ask_gpt($messages, $openai_key) {
         "max_tokens" => 400,
         "temperature" => 0.5
     ];
+    
     $ch = curl_init("https://api.openai.com/v1/chat/completions");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
@@ -89,50 +163,87 @@ function ask_gpt($messages, $openai_key) {
     ]);
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    
     $result = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-
+    
+    if ($result === false || $http_code !== 200) {
+        error_log("OpenAI API error: HTTP $http_code, Response: $result");
+        return "Извините, сейчас возникли технические проблемы. Попробуйте позже или напишите напрямую @smkornaukhovv";
+    }
+    
     $response = json_decode($result, true);
-    return $response['choices'][0]['message']['content'] ?? "Извините, не удалось получить ответ от ИИ.";
+    if (!isset($response['choices'][0]['message']['content'])) {
+        error_log("Invalid OpenAI response structure: " . $result);
+        return "Извините, не удалось получить ответ от ИИ. Попробуйте еще раз или напишите @smkornaukhovv";
+    }
+    
+    return $response['choices'][0]['message']['content'];
+}
+
+// ====== ФУНКЦИЯ ПРОВЕРКИ ПОСЛЕДНЕГО СООБЩЕНИЯ О ПОДПИСКЕ ======
+function get_last_subscription_check($chat_id) {
+    $file = __DIR__ . "/subscription_checks/{$chat_id}.txt";
+    if (!file_exists($file)) return 0;
+    $time = file_get_contents($file);
+    return $time ? (int)$time : 0;
+}
+
+function save_last_subscription_check($chat_id) {
+    $dir = __DIR__ . '/subscription_checks';
+    if (!file_exists($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    file_put_contents($dir . "/{$chat_id}.txt", time());
 }
 
 // ====== ОСНОВНОЙ КОД ======
 $content = file_get_contents("php://input");
+if ($content === false) {
+    error_log("Failed to read input");
+    exit;
+}
+
 $update = json_decode($content, true);
+if ($update === null) {
+    error_log("Failed to decode JSON input");
+    exit;
+}
 
 if (isset($update["message"])) {
     $chat_id = $update["message"]["chat"]["id"];
-    $user_message = trim($update["message"]["text"]);
-    $user_name = $update["message"]["from"]["first_name"] ?? "";
+    $user_message = trim($update["message"]["text"] ?? "");
+    $user_name = $update["message"]["from"]["first_name"] ?? "друг";
     $user_id = $update["message"]["from"]["id"];
 
+    // Проверяем, не отправляли ли мы уже сообщение о подписке в последние 60 секунд
+    $last_check = get_last_subscription_check($chat_id);
+    $current_time = time();
+    
     // ====== ПРОВЕРКА ПОДПИСКИ ======
     $channel = "@smkornaukhovv";
-    $check_url = "https://api.telegram.org/bot$token/getChatMember?chat_id=$channel&user_id=$user_id";
-    $check_result = json_decode(file_get_contents($check_url), true);
-    $is_member = false;
-    if (isset($check_result["result"]["status"])) {
-        $status = $check_result["result"]["status"];
-        // 'member', 'creator', 'administrator' — подписан
-        if (in_array($status, ["member", "administrator", "creator"])) {
-            $is_member = true;
-        }
-    }
+    $is_member = check_subscription($token, $channel, $user_id);
+    
     if (!$is_member) {
-        file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query([
-            'chat_id' => $chat_id,
-            'text' => "Для продолжения подпишись на канал 👉 @smkornaukhovv, а потом нажми /start"
-        ]));
+        // Проверяем, не спамили ли мы уже
+        if ($current_time - $last_check < 60) {
+            // Если отправляли сообщение менее минуты назад - игнорируем
+            exit;
+        }
+        
+        $success = send_telegram_message($token, $chat_id, "Для продолжения подпишись на канал 👉 @smkornaukhovv, а потом нажми /start");
+        if ($success) {
+            save_last_subscription_check($chat_id);
+        }
         exit;
     }
 
     // ====== ПРИВЕТСТВИЕ (ТОЛЬКО ПРИ ПЕРВОМ ОБРАЩЕНИИ) ======
     $history = get_chat_history($chat_id);
     if (empty($history)) {
-        file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query([
-            'chat_id' => $chat_id,
-            'text' => "Привет, $user_name! Рад видеть тебя, сейчас найду лучший вариант квартиры под твои цели. 😉"
-        ]));
+        send_telegram_message($token, $chat_id, "Привет, $user_name! Рад видеть тебя, сейчас найду лучший вариант квартиры под твои цели. 😉");
     }
 
     // ====== СФОРМИРУЙ БАЗУ ДЛЯ ПРОМПТА ======
@@ -210,8 +321,6 @@ $base_info
     save_chat_history($chat_id, $history);
 
     // ====== ОТПРАВЛЯЕМ ОТВЕТ ======
-    file_get_contents("https://api.telegram.org/bot$token/sendMessage?" . http_build_query([
-        'chat_id' => $chat_id,
-        'text' => $answer
-    ]));
+    send_telegram_message($token, $chat_id, $answer);
 }
+?>
