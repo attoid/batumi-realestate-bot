@@ -7,14 +7,11 @@ $token = getenv('TELEGRAM_TOKEN');
 
 // ====== ФУНКЦИЯ ПОЛУЧЕНИЯ ДАННЫХ ИЗ GOOGLE SHEETS ======
 function get_apartments_from_sheets() {
-    // Ваша ссылка преобразованная в CSV формат
     $sheet_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSiwJ2LTzkOdpQNfqNBnxz0SGcHPz36HHm6voblS_2SdAK2H5oO1-xbZt1yF3-Y-YlPiKIN5CAxZpVh/pub?output=csv";
-
-    // Кэширование на 5 минут для оптимизации
     $cache_file = __DIR__ . '/cache/apartments.json';
     $cache_time = 300; // 5 минут
 
-    // Проверяем кэш
+    // Кэширование
     if (file_exists($cache_file) && (time() - filemtime($cache_file)) < $cache_time) {
         $cached_data = file_get_contents($cache_file);
         return json_decode($cached_data, true);
@@ -26,7 +23,6 @@ function get_apartments_from_sheets() {
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 10);
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; PHP Bot)');
-
     $csv_data = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
@@ -38,7 +34,7 @@ function get_apartments_from_sheets() {
             $cached_data = file_get_contents($cache_file);
             return json_decode($cached_data, true);
         }
-        return []; // Возвращаем пустой массив, если ничего не доступно
+        return []; // Если ничего нет — пусто
     }
 
     // Парсим CSV
@@ -64,8 +60,8 @@ function parse_csv_to_apartments($csv_data) {
         if (empty($line)) continue;
         $data = str_getcsv($line);
 
-        // Адаптировано: поддержка новой колонки "ЖК"
-        if (count($data) < 7) continue; // Нужно хотя бы 7 колонок: этаж, номер, площадь, вид, цена, сумма, жк
+        // Должно быть хотя бы 7 колонок: этаж, номер, площадь, вид, цена, сумма, жк
+        if (count($data) < 7) continue;
 
         $apartment = [
             'этаж' => (int)$data[0],
@@ -101,18 +97,187 @@ foreach ($apartments as $a) {
 $base_stats = "В базе сейчас " . count($apartments) . " квартир, из них студий — $studio_count, цены студий: от \$$studio_min_price до \$$studio_max_price.";
 
 // ====== ФУНКЦИИ ИСТОРИИ ЧАТА ======
-// ... (без изменений, см. твой код выше)
-
-// ====== ОСНОВНОЙ КОД ======
-// ... (всё по твоей схеме, только в формировании базы выводим ЖК)
-
-$base_info = "";
-foreach ($apartments as $a) {
-    $base_info .= "ЖК: {$a['жк']}, Этаж: {$a['этаж']}, №: {$a['номер']}, Площадь: {$a['площадь']} м², Вид: {$a['вид']}, Цена/м²: \${$a['цена_м2']}, Всего: \${$a['общая_сумма']}, Статус: {$a['статус']}\n";
+function get_chat_history($chat_id) {
+    $file = __DIR__ . "/history/{$chat_id}.json";
+    if (!file_exists($file)) return [];
+    $content = file_get_contents($file);
+    if ($content === false) return [];
+    $decoded = json_decode($content, true);
+    return $decoded === null ? [] : $decoded;
+}
+function save_chat_history($chat_id, $history) {
+    $dir = __DIR__ . '/history';
+    if (!file_exists($dir)) {
+        if (!mkdir($dir, 0777, true)) {
+            error_log("Failed to create history directory");
+            return false;
+        }
+    }
+    $result = file_put_contents($dir . "/{$chat_id}.json", json_encode($history, JSON_UNESCAPED_UNICODE));
+    if ($result === false) {
+        error_log("Failed to save chat history for chat_id: $chat_id");
+        return false;
+    }
+    return true;
 }
 
+// ====== ФУНКЦИЯ ОТПРАВКИ СООБЩЕНИЯ ======
+function send_telegram_message($token, $chat_id, $text) {
+    $url = "https://api.telegram.org/bot$token/sendMessage";
+    $data = [
+        'chat_id' => $chat_id,
+        'text' => $text
+    ];
 
-    // ====== SYSTEM PROMPT (ОБНОВЛЕННЫЙ) ======
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+
+    $result = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($result === false || $http_code !== 200) {
+        error_log("Failed to send Telegram message: HTTP $http_code");
+        return false;
+    }
+
+    return json_decode($result, true);
+}
+
+// ====== ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ ======
+function check_subscription($token, $channel, $user_id) {
+    $url = "https://api.telegram.org/bot$token/getChatMember";
+    $data = [
+        'chat_id' => $channel,
+        'user_id' => $user_id
+    ];
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url . '?' . http_build_query($data));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+
+    $result = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($result === false || $http_code !== 200) {
+        error_log("Failed to check subscription: HTTP $http_code");
+        return true; // В случае ошибки API пропускаем проверку
+    }
+
+    $response = json_decode($result, true);
+    if (!isset($response["result"]["status"])) {
+        return true; // В случае неожиданного ответа пропускаем проверку
+    }
+
+    $status = $response["result"]["status"];
+    return in_array($status, ["member", "administrator", "creator"]);
+}
+
+// ====== GPT ФУНКЦИЯ ======
+function ask_gpt($messages, $openai_key) {
+    $data = [
+        "model" => "gpt-4o",
+        "messages" => $messages,
+        "max_tokens" => 400,
+        "temperature" => 0.5
+    ];
+
+    $ch = curl_init("https://api.openai.com/v1/chat/completions");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "Authorization: Bearer $openai_key"
+    ]);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+
+    $result = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($result === false || $http_code !== 200) {
+        error_log("OpenAI API error: HTTP $http_code, Response: $result");
+        return "Извините, сейчас возникли технические проблемы. Попробуйте позже или напишите напрямую @smkornaukhovv";
+    }
+
+    $response = json_decode($result, true);
+    if (!isset($response['choices'][0]['message']['content'])) {
+        error_log("Invalid OpenAI response structure: " . $result);
+        return "Извините, не удалось получить ответ от ИИ. Попробуйте еще раз или напишите @smkornaukhovv";
+    }
+
+    return $response['choices'][0]['message']['content'];
+}
+
+// ====== ФУНКЦИЯ ПРОВЕРКИ ПОСЛЕДНЕГО СООБЩЕНИЯ О ПОДПИСКЕ ======
+function get_last_subscription_check($chat_id) {
+    $file = __DIR__ . "/subscription_checks/{$chat_id}.txt";
+    if (!file_exists($file)) return 0;
+    $time = file_get_contents($file);
+    return $time ? (int)$time : 0;
+}
+function save_last_subscription_check($chat_id) {
+    $dir = __DIR__ . '/subscription_checks';
+    if (!file_exists($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    file_put_contents($dir . "/{$chat_id}.txt", time());
+}
+
+// ====== ОСНОВНОЙ КОД ======
+$content = file_get_contents("php://input");
+if ($content === false) {
+    error_log("Failed to read input");
+    exit;
+}
+$update = json_decode($content, true);
+if ($update === null) {
+    error_log("Failed to decode JSON input");
+    exit;
+}
+if (isset($update["message"])) {
+    $chat_id = $update["message"]["chat"]["id"];
+    $user_message = trim($update["message"]["text"] ?? "");
+    $user_name = $update["message"]["from"]["first_name"] ?? "друг";
+    $user_id = $update["message"]["from"]["id"];
+
+    // Проверяем, не отправляли ли мы уже сообщение о подписке в последние 60 секунд
+    $last_check = get_last_subscription_check($chat_id);
+    $current_time = time();
+
+    // ====== ПРОВЕРКА ПОДПИСКИ ======
+    $channel = "@smkornaukhovv";
+    $is_member = check_subscription($token, $channel, $user_id);
+
+    if (!$is_member) {
+        // Проверяем, не спамили ли мы уже
+        if ($current_time - $last_check < 60) {
+            exit;
+        }
+        $success = send_telegram_message($token, $chat_id, "Для продолжения подпишись на канал 👉 @smkornaukhovv, а потом нажми /start");
+        if ($success) {
+            save_last_subscription_check($chat_id);
+        }
+        exit;
+    }
+
+    // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
+    $history = get_chat_history($chat_id);
+
+    // ====== СФОРМИРУЙ БАЗУ ДЛЯ ПРОМПТА ======
+    $base_info = "";
+    foreach ($apartments as $a) {
+        $base_info .= "ЖК: {$a['жк']}, Этаж: {$a['этаж']}, №: {$a['номер']}, Площадь: {$a['площадь']} м², Вид: {$a['вид']}, Цена/м²: \${$a['цена_м2']}, Всего: \${$a['общая_сумма']}, Статус: {$a['статус']}\n";
+    }
+
+    // ====== SYSTEM PROMPT ======
     $messages = [
         [
             "role" => "system",
@@ -129,7 +294,7 @@ foreach ($apartments as $a) {
 — Новый Бульвар: Ande Metropolis, Summer365, Real Palace Blue, Symbol, Artex, SkuLuxe.
 — Старый город: Modern Ultra.
 
-Если клиент спрашивает про район, расскажи чем районы отличаются и предложи варианты по этим объектам. По Махинджаури — акцент на Thalassa Group.
+Если клиент спрашивает про район или конкретный ЖК — фильтруй и выводи только предложения по нему. В базе могут быть сразу несколько застройщиков.
 
 **Акционные квартиры (№319, 412, 514) — объясни две опции:**
 1. Обычная цена + рассрочка до 18 мес. при 30% взносе:
