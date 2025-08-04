@@ -83,6 +83,18 @@ function parse_csv_to_apartments($csv_data) {
 // ====== ПОЛУЧАЕМ КВАРТИРЫ ======
 $apartments = get_apartments_from_sheets();
 
+// ====== ДЕБАГ — отправляем себе первые 3 квартиры ======
+if (!empty($apartments)) {
+    $debug_apartments = array_slice($apartments, 0, 3);
+    send_telegram_message($token, $chat_id, 
+        "DEMO: Вот первые 3 квартиры из базы:\n" .
+        json_encode($debug_apartments, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
+    );
+} else {
+    send_telegram_message($token, $chat_id, "DEMO: В массиве apartments НИЧЕГО нет!");
+}
+
+
 // ====== СТАТИСТИКА ПО БАЗЕ ======
 $studio_count = 0;
 $studio_min_price = null;
@@ -270,6 +282,8 @@ if (isset($update["message"])) {
 
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
     $history = get_chat_history($chat_id);
+
+file_put_contents(__DIR__.'/parse_debug.log', print_r($apartments,1));
 
     // ====== СФОРМИРУЙ БАЗУ ДЛЯ ПРОМПТА ======
     $base_info = "";
