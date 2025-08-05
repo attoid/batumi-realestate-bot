@@ -4,6 +4,7 @@ ini_set('display_errors', 1);
 
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
+$admin_chat_id = "5235599694"; //
 
 // ====== ПРОВЕРКА НА ДУБЛИКАТЫ ЗАПРОСОВ ======
 $content = file_get_contents("php://input");
@@ -227,6 +228,24 @@ function save_chat_history($chat_id, $history) {
     return true;
 }
 
+// ====== ФУНКЦИИ СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЯ ======
+function get_user_state($chat_id) {
+    $file = __DIR__ . "/states/{$chat_id}.json";
+    if (!file_exists($file)) return ['state' => 'normal', 'data' => []];
+    $content = file_get_contents($file);
+    if ($content === false) return ['state' => 'normal', 'data' => []];
+    $decoded = json_decode($content, true);
+    return $decoded === null ? ['state' => 'normal', 'data' => []] : $decoded;
+}
+
+function save_user_state($chat_id, $state) {
+    $dir = __DIR__ . '/states';
+    if (!file_exists($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    file_put_contents($dir . "/{$chat_id}.json", json_encode($state, JSON_UNESCAPED_UNICODE));
+}
+
 // ====== ФУНКЦИЯ ОТПРАВКИ СООБЩЕНИЯ ======
 function send_telegram_message($token, $chat_id, $text) {
     $url = "https://api.telegram.org/bot$token/sendMessage";
@@ -338,6 +357,76 @@ function save_last_subscription_check($chat_id) {
     file_put_contents($dir . "/{$chat_id}.txt", time());
 }
 
+// ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
+function handle_booking_process($chat_id, $user_message, $user_state, $user_name, $token, $admin_chat_id) {
+    $state = $user_state['state'];
+    $data = $user_state['data'];
+    
+    switch ($state) {
+        case 'booking_time':
+            $data['time'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_phone', 'data' => $data]);
+            return "Отлично! Теперь укажите ваш номер телефона:";
+            
+        case 'booking_phone':
+            $data['phone'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_name', 'data' => $data]);
+            return "Как к вам обращаться? Укажите ваше имя:";
+            
+        case 'booking_name':
+            $data['client_name'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_budget', 'data' => $data]);
+            return "Какой у вас бюджет на покупку? (укажите сумму в долларах)";
+            
+        case 'booking_budget':
+            $data['budget'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_payment', 'data' => $data]);
+            return "Планируете покупать сразу за полную стоимость или в рассрочку?";
+            
+        case 'booking_payment':
+            $data['payment_type'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_timeline', 'data' => $data]);
+            return "Когда планируете выйти на сделку? (например: в течение месяца, через 3 месяца и т.д.)";
+            
+        case 'booking_timeline':
+            $data['timeline'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_decision_maker', 'data' => $data]);
+            return "Кто принимает окончательное решение о покупке? (вы лично, с супругом/супругой, с родителями и т.д.)";
+            
+        case 'booking_decision_maker':
+            $data['decision_maker'] = $user_message;
+            save_user_state($chat_id, ['state' => 'booking_purpose', 'data' => $data]);
+            return "С какой целью покупаете недвижимость? (для проживания, инвестиций, сдачи в аренду и т.д.)";
+            
+        case 'booking_purpose':
+            $data['purpose'] = $user_message;
+            
+            // Отправляем данные админу
+            $admin_message = "🏠 НОВАЯ ЗАЯВКА НА ПОКАЗ\n\n";
+            $admin_message .= "👤 Клиент: {$data['client_name']}\n";
+            $admin_message .= "📱 Телефон: {$data['phone']}\n";
+            $admin_message .= "🕐 Время показа: {$data['time']}\n";
+            if (!empty($data['apartment'])) {
+                $admin_message .= "🏢 Квартира: {$data['apartment']}\n";
+            }
+            $admin_message .= "💰 Бюджет: {$data['budget']}\n";
+            $admin_message .= "💳 Оплата: {$data['payment_type']}\n";
+            $admin_message .= "📅 Сделка: {$data['timeline']}\n";
+            $admin_message .= "👥 ЛПР: {$data['decision_maker']}\n";
+            $admin_message .= "🎯 Цель: {$data['purpose']}\n";
+            $admin_message .= "💬 Telegram: @{$user_name} (ID: {$chat_id})";
+            
+            send_telegram_message($token, $admin_chat_id, $admin_message);
+            
+            // Сбрасываем состояние
+            save_user_state($chat_id, ['state' => 'normal', 'data' => []]);
+            
+            return "Отлично! Ваша заявка принята. Сергей свяжется с вами лично для уточнения всех деталей показа. Спасибо за обращение! 🏠";
+    }
+    
+    return "Что-то пошло не так. Попробуйте еще раз.";
+}
+
 // ====== ПОЛУЧАЕМ КВАРТИРЫ ======
 $apartments = get_apartments_from_sheets();
 
@@ -346,6 +435,7 @@ if (isset($update["message"])) {
     $user_message = trim($update["message"]["text"] ?? "");
     $user_name = $update["message"]["from"]["first_name"] ?? "друг";
     $user_id = $update["message"]["from"]["id"];
+    $username = $update["message"]["from"]["username"] ?? "нет_username";
 
     error_log("Processing message from user $user_name ($user_id): $user_message");
 
@@ -376,8 +466,34 @@ if (isset($update["message"])) {
         exit;
     }
 
+    // ====== ПОЛУЧАЕМ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ ======
+    $user_state = get_user_state($chat_id);
+    
+    // ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
+    if ($user_state['state'] !== 'normal') {
+        $response = handle_booking_process($chat_id, $user_message, $user_state, $username, $token, $admin_chat_id);
+        send_telegram_message($token, $chat_id, $response);
+        exit;
+    }
+
+    // ====== ПРОВЕРКА НА КОМАНДЫ ЗАПИСИ НА ПОКАЗ ======
+    $booking_keywords = ['показ', 'запись', 'записаться', 'хочу посмотреть', 'онлайн показ', 'онлайн-показ', 'встретиться', 'встреча'];
+    $message_lower = mb_strtolower($user_message);
+    
+    foreach ($booking_keywords as $keyword) {
+        if (strpos($message_lower, $keyword) !== false) {
+            // Начинаем процесс записи на показ
+            save_user_state($chat_id, ['state' => 'booking_time', 'data' => ['apartment' => '']]);
+            send_telegram_message($token, $chat_id, "Отлично! Давайте запишем вас на показ. Укажите удобное для вас время:");
+            exit;
+        }
+    }
+
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
     $history = get_chat_history($chat_id);
+    
+    // Определяем, является ли это первым обращением
+    $is_first_message = empty($history) || trim(strtolower($user_message)) === '/start';
     
     // Очищаем историю при команде /start
     if (trim(strtolower($user_message)) === '/start') {
@@ -409,11 +525,17 @@ if (isset($update["message"])) {
     }
 
     // ====== SYSTEM PROMPT ======
+    $greeting_instruction = $is_first_message ? 
+        "ВАЖНО: Это первое сообщение от пользователя. Поздоровайся с ним по имени и СРАЗУ спроси про район интересов." : 
+        "ВАЖНО: Пользователь уже общался с тобой ранее. НЕ здоровайся повторно! Продолжай диалог по существу.";
+
     $messages = [
         [
             "role" => "system",
             "content" =>
 "Ты общаешься с пользователем по имени $user_name. Всегда обращайся к нему по этому имени — без изменений, переводов и русификаций. 
+
+$greeting_instruction
 
 Ты умный, дерзкий и харизматичный AI-консультант по недвижимости в Батуми. 
 Тебя создал Сергей Корнаухов - брокер по недвижимости, предприниматель. Общайся в стиле Джордан Белфорд, но не говори что ты общаешься в его стиле.
@@ -424,7 +546,10 @@ if (isset($update["message"])) {
 - Сколько комнат нужно?
 - Рассрочка или сразу?
 
-ВСЕГДА начинай с приветствия и вопросов о потребностях. Только после этого показывай подходящие варианты.
+После каждого ответа показывай 1-2 подходящих варианта.
+
+ВАЖНО: В конце каждого сообщения с вариантами квартир добавляй фразу: 
+'Хотите записаться на показ? Просто напишите «хочу посмотреть» или «запись на показ»!'
 
 Твоя специализация — подбор недвижимости по районам:
 — Махинджаури: ЖК Thalassa Group, Next Collection, Kolos, A Sector, Mziuri.
@@ -442,11 +567,8 @@ if (isset($update["message"])) {
    — №514: \$32,832
 
 Твой подход к общению:
-— При первом сообщении (/start или приветствие) — поздоровайся и спроси про район
-— НИКОГДА не повторяй приветствие если уже общались
 — Задавай ТОЛЬКО ОДИН вопрос за раз
 — Выясняй потребности ПОЭТАПНО: сначала район, потом бюджет, потом комнаты
-— После каждого ответа показывай 1-2 подходящих варианта
 — Говори кратко, с энтузиазмом, без повторов
 
 Формат квартир по площади:
