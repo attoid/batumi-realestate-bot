@@ -4,7 +4,7 @@ ini_set('display_errors', 1);
 
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
-$admin_chat_id = "YOUR_ADMIN_CHAT_ID"; // Замените на ваш chat_id
+$admin_chat_id = "5235599694";
 
 // ====== ПРОВЕРКА НА ДУБЛИКАТЫ ЗАПРОСОВ ======
 $content = file_get_contents("php://input");
@@ -438,6 +438,72 @@ if (isset($update["message"])) {
     $username = $update["message"]["from"]["username"] ?? "нет_username";
 
     error_log("Processing message from user $user_name ($user_id): $user_message");
+
+    // ====== ДОБАВЛЕНИЕ "ЖИВОЙ" ВЕТКИ БЕЗ СОКРАЩЕНИЙ ======
+// Сохраняем этап сценария в отдельном файле, не мешая твоим states!
+$custom_state_file = __DIR__ . "/custom_state_{$chat_id}.json";
+$custom_state = file_exists($custom_state_file) ? json_decode(file_get_contents($custom_state_file), true) : ["step" => 0, "data" => []];
+
+// /start всегда сбрасывает живой сценарий
+if (trim(strtolower($user_message)) === '/start') {
+    file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
+}
+
+// Ветка только если НЕ в процессе "booking" и НЕ команда на показ
+if (
+    $user_state['state'] === 'normal' &&
+    !in_array(true, array_map(fn($kw) => strpos(mb_strtolower($user_message), $kw) !== false, $booking_keywords))
+) {
+    // 0 — старт
+    if ($custom_state["step"] === 0) {
+        $custom_state["step"] = 1;
+        file_put_contents($custom_state_file, json_encode($custom_state));
+        send_telegram_message($token, $chat_id, "Привет, $user_name! Подскажи, для чего смотришь недвижимость в Батуми? (Жить, инвестиции, отдых, другое)");
+        exit;
+    }
+    // 1 — выясняем район
+    if ($custom_state["step"] === 1) {
+        $custom_state["data"]["motivation"] = $user_message;
+        $custom_state["step"] = 2;
+        file_put_contents($custom_state_file, json_encode($custom_state));
+        send_telegram_message($token, $chat_id, "Спасибо! А какой район интересен? (Махинджаури, Новый Бульвар, Старый город, или свой вариант)");
+        exit;
+    }
+    // 2 — примеры квартир, призыв на онлайн-показ
+    if ($custom_state["step"] === 2) {
+        $custom_state["data"]["district"] = $user_message;
+        $custom_state["step"] = 3;
+        file_put_contents($custom_state_file, json_encode($custom_state));
+        $district = mb_strtolower($custom_state["data"]["district"]);
+        $examples = [
+            "махинджаури" => "— Студия 29 м² у моря — \$32,800\n— 1+1, 42 м² — \$53,000\n",
+            "новый бульвар" => "— Студия 35 м² — \$39,500\n— 1+1, 50 м² — \$56,000\n",
+            "старый город" => "— Студия 28 м² — \$44,000\n— 1+1, 41 м² — \$59,500\n"
+        ];
+        $answer = $examples[$district] ?? "— Студии от \$32,000, 1+1 от \$50,000 (есть во всех районах)";
+        send_telegram_message($token, $chat_id, "Вот примеры:\n$answer\nХочешь увидеть квартиру по видеосвязи? Напиши «онлайн-показ» — это бесплатно, покажу всё вживую.");
+        exit;
+    }
+    // 3 — ждем согласия на показ/запись
+    if ($custom_state["step"] === 3) {
+        if (mb_stripos($user_message, 'показ') !== false || mb_stripos($user_message, 'запис') !== false) {
+            // Сохраняем этап + мягко передаём дальше в твою анкету booking_time
+            file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
+            save_user_state($chat_id, ['state' => 'booking_time', 'data' => [
+                'apartment' => '', // можно дописать, если надо
+                'motivation' => $custom_state["data"]["motivation"] ?? '',
+                'district' => $custom_state["data"]["district"] ?? ''
+            ]]);
+            send_telegram_message($token, $chat_id, "Отлично! Давайте согласуем время для онлайн-показа. Укажите удобное время:");
+            exit;
+        } else {
+            send_telegram_message($token, $chat_id, "Если интересно посмотреть — напиши «онлайн-показ». Или уточни: бюджет, этаж, вид — помогу подобрать под тебя.");
+            exit;
+        }
+    }
+}
+// ====== КОНЕЦ БЛОКА "ЖИВОЙ ВЕТКИ" ======
+
 
     // ====== ДЕБАГ - только в логи, не пользователю ======
     if (!empty($apartments)) {
