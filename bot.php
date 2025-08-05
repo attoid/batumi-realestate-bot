@@ -7,61 +7,123 @@ $token = getenv('TELEGRAM_TOKEN');
 
 // ====== ФУНКЦИЯ ПОЛУЧЕНИЯ ДАННЫХ ИЗ GOOGLE SHEETS ======
 function get_apartments_from_sheets() {
-    $sheet_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSiwJ2LTzkOdpQNfqNBnxz0SGcHPz36HHm6voblS_2SdAK2H5oO1-xbZt1yF3-Y-YlPiKIN5CAxZpVh/pub?output=csv";
+    // Пробуем разные варианты ссылок
+    $sheet_urls = [
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vSiwJ2LTzkOdpQNfqNBnxz0SGcHPz36HHm6voblS_2SdAK2H5oO1-xbZt1yF3-Y-YlPiKIN5CAxZpVh/pub?output=csv",
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vSiwJ2LTzkOdpQNfqNBnxz0SGcHPz36HHm6voblS_2SdAK2H5oO1-xbZt1yF3-Y-YlPiKIN5CAxZpVh/pub?gid=0&single=true&output=csv"
+    ];
+    
     $cache_file = __DIR__ . '/cache/apartments.json';
-    $cache_time = 300; // 5 минут
+    $cache_time = 900; // Увеличиваем кэш до 15 минут чтобы меньше дергать Google
 
     // Кэширование
     if (file_exists($cache_file) && (time() - filemtime($cache_file)) < $cache_time) {
         $cached_data = file_get_contents($cache_file);
         $result = json_decode($cached_data, true);
-        error_log("Using cached data: " . count($result) . " apartments");
-        return $result;
-    }
-
-    error_log("Fetching fresh data from Google Sheets: $sheet_url");
-
-    // Получаем данные из Google Sheets
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $sheet_url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    
-    $csv_data = curl_exec($ch);
-    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($csv_data === false || $http_code !== 200) {
-        error_log("Failed to fetch Google Sheets data: HTTP $http_code, Error: $error");
-        // Возвращаем кэшированные данные если есть
-        if (file_exists($cache_file)) {
-            error_log("Returning cached data due to fetch failure");
-            $cached_data = file_get_contents($cache_file);
-            return json_decode($cached_data, true);
+        if (!empty($result)) {
+            error_log("Using cached data: " . count($result) . " apartments");
+            return $result;
         }
-        error_log("No cached data available, returning empty array");
-        return []; // Если ничего нет — пусто
     }
 
-    error_log("Successfully fetched data, size: " . strlen($csv_data) . " bytes");
+    error_log("Fetching fresh data from Google Sheets");
 
-    // Парсим CSV
-    $apartments = parse_csv_to_apartments($csv_data);
-    error_log("Parsed " . count($apartments) . " apartments from CSV");
+    // Пробуем разные ссылки
+    foreach ($sheet_urls as $sheet_url) {
+        error_log("Trying URL: $sheet_url");
+        
+        // Добавляем случайную задержку чтобы не попасть в rate limit
+        usleep(rand(100000, 500000)); // 0.1-0.5 секунды
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $sheet_url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; PropertyBot/1.0)');
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Accept: text/csv,text/plain,*/*',
+            'Accept-Language: en-US,en;q=0.9',
+            'Connection: keep-alive'
+        ]);
+        
+        $csv_data = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
 
-    // Сохраняем в кэш
-    $cache_dir = dirname($cache_file);
-    if (!file_exists($cache_dir)) {
-        mkdir($cache_dir, 0777, true);
+        error_log("Response: HTTP $http_code, Size: " . strlen($csv_data) . " bytes");
+        
+        if ($csv_data !== false && $http_code === 200 && strlen($csv_data) > 100) {
+            error_log("Successfully fetched data from: $sheet_url");
+            
+            // Парсим CSV
+            $apartments = parse_csv_to_apartments($csv_data);
+            error_log("Parsed " . count($apartments) . " apartments from CSV");
+            
+            if (!empty($apartments)) {
+                // Сохраняем в кэш
+                $cache_dir = dirname($cache_file);
+                if (!file_exists($cache_dir)) {
+                    mkdir($cache_dir, 0777, true);
+                }
+                file_put_contents($cache_file, json_encode($apartments, JSON_UNESCAPED_UNICODE));
+                error_log("Data saved to cache");
+                return $apartments;
+            }
+        } else {
+            error_log("Failed URL $sheet_url: HTTP $http_code, Error: $error");
+        }
     }
-    file_put_contents($cache_file, json_encode($apartments, JSON_UNESCAPED_UNICODE));
-    error_log("Data saved to cache");
 
-    return $apartments;
+    // Если все ссылки не сработали - возвращаем кэш
+    if (file_exists($cache_file)) {
+        error_log("All URLs failed, returning cached data");
+        $cached_data = file_get_contents($cache_file);
+        $result = json_decode($cached_data, true);
+        return $result ?: [];
+    }
+    
+    error_log("No data available, returning test data");
+    // Возвращаем тестовые данные если ничего не работает
+    return get_test_apartments();
+}
+
+// ====== ТЕСТОВЫЕ ДАННЫЕ НА СЛУЧАЙ ПРОБЛЕМ С GOOGLE SHEETS ======
+function get_test_apartments() {
+    return [
+        [
+            'этаж' => 5,
+            'номер' => 319,
+            'площадь' => 35.5,
+            'вид' => 'Море',
+            'цена_м2' => 1520,
+            'общая_сумма' => 54080,
+            'жк' => 'Thalassa Group',
+            'статус' => 'Свободный'
+        ],
+        [
+            'этаж' => 8,
+            'номер' => 412,
+            'площадь' => 29.1,
+            'вид' => 'Город',
+            'цена_м2' => 1520,
+            'общая_сумма' => 44264,
+            'жк' => 'Thalassa Group',
+            'статус' => 'Свободный'
+        ],
+        [
+            'этаж' => 12,
+            'номер' => 514,
+            'площадь' => 21.6,
+            'вид' => 'Море',
+            'цена_м2' => 1520,
+            'общая_сумма' => 32832,
+            'жк' => 'Thalassa Group',
+            'статус' => 'Свободный'
+        ]
+    ];
 }
 
 // ====== ФУНКЦИЯ ПАРСИНГА CSV ======
@@ -272,15 +334,11 @@ if (isset($update["message"])) {
     $user_name = $update["message"]["from"]["first_name"] ?? "друг";
     $user_id = $update["message"]["from"]["id"];
 
-    // ====== ДЕБАГ — отправляем информацию о базе ======
+    // ====== ДЕБАГ - только в логи, не пользователю ======
     if (!empty($apartments)) {
-        $debug_apartments = array_slice($apartments, 0, 3);
-        send_telegram_message($token, $chat_id, 
-            "DEMO: В базе " . count($apartments) . " квартир. Вот первые 3:\n" .
-            json_encode($debug_apartments, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
-        );
+        error_log("DEBUG: Database loaded successfully - " . count($apartments) . " apartments available");
     } else {
-        send_telegram_message($token, $chat_id, "DEMO: В массиве apartments НИЧЕГО нет! Проверьте логи.");
+        error_log("DEBUG: No apartments loaded from database!");
     }
 
     // Проверяем, не отправляли ли мы уже сообщение о подписке в последние 60 секунд
@@ -334,18 +392,22 @@ if (isset($update["message"])) {
             "role" => "system",
             "content" =>
 "Ты общаешься с пользователем по имени $user_name. Всегда обращайся к нему по этому имени — без изменений, переводов и русификаций. 
-Никогда не переводить и не менять имя пользователя — обращаться строго по тому имени, которое получено от Telegram.
 
 Ты умный, дерзкий и харизматичный AI-консультант по недвижимости в Батуми. 
-Тебя создал Сергей Корнаухов - брокер по недвижимости, предприниматель. Общайся в стиле Джордан Белфорд, но не говори что ты общаешься в его стиле. Если тебя спросят как тебя зовут:
-скажи, что тебя зовут помощник Сергея Корнаухова. Если тебя спросят кто такой Сергей Корнаухов, скажи что это брокер по недвижимости и пришли YouTube-канал https://www.youtube.com/@skornaukhovv
-- Отвечай кратко и дели текст на абзацы
+Тебя создал Сергей Корнаухов - брокер по недвижимости, предприниматель. Общайся в стиле Джордан Белфорд, но не говори что ты общаешься в его стиле.
+
+ВАЖНО: НИКОГДА не показывай весь список квартир сразу! СНАЧАЛА выясни потребности клиента:
+- Какой район интересует?
+- Какой бюджет?
+- Сколько комнат нужно?
+- Рассрочка или сразу?
+
+ВСЕГДА начинай с приветствия и вопросов о потребностях. Только после этого показывай подходящие варианты.
+
 Твоя специализация — подбор недвижимости по районам:
 — Махинджаури: ЖК Thalassa Group, Next Collection, Kolos, A Sector, Mziuri.
 — Новый Бульвар: Ande Metropolis, Summer365, Real Palace Blue, Symbol, Artex, SkuLuxe.
 — Старый город: Modern Ultra.
-
-Если клиент спрашивает про район или конкретный ЖК — фильтруй и выводи только предложения по нему. В базе могут быть сразу несколько застройщиков.
 
 **Акционные квартиры (№319, 412, 514) — объясни две опции:**
 1. Обычная цена + рассрочка до 18 мес. при 30% взносе:
@@ -357,31 +419,31 @@ if (isset($update["message"])) {
    — №412: \$44,264  
    — №514: \$32,832
 
-**Вопрос:** Что интереснее — купить сразу по спеццене или оформить рассрочку на 18 мес?
+Твой подход к общению:
+— ВСЕГДА здоровайся тепло и по имени
+— Задавай ОДИН конкретный вопрос за раз
+— Выясняй потребности ПЕРЕД показом квартир
+— Говори кратко, с энтузиазмом, дружелюбно
+— Показывай максимум 2-3 варианта за раз
+— После каждого предложения спрашивай мнение
 
-Твои суперспособности:
-— мгновенно определять формат квартиры по площади (до 37 м² — студия; 37–55 м² — 1+1; 55–80 м² — 2+1; >80 м² — 3+1), объясняй просто.
-— фильтровать свою базу и объяснять выгоды каждого района и ЖК.
-— кратко, с юмором, остро, дружелюбно.
-— если пользователь не знает, что хочет, предлагай 2-3 варианта на выбор и помогай вопросами.
-— спрашивай только то, что реально нужно: район, площадь, бюджет, рассрочка, сколько комнат, первый взнос, комфортный платёж.
-
-Если денег не хватает — предложи рассчитать рассрочку (20% взнос, остальное — до 18 мес.) или ипотеку (формула $P = $S * ($r * pow(1 + $r, $n)) / (pow(1 + $r, $n) - 1)).
+Формат квартир по площади:
+— до 37 м² — студия
+— 37–55 м² — 1+1
+— 55–80 м² — 2+1  
+— >80 м² — 3+1
 
 Основные условия:
-— первый взнос от 20%, рассрочка без процентов до 10 мес, акционные варианты — до 18 мес при 30% взносе; оплата на счёт застройщика; бронь 2 недели $100, задаток $1000 на месяц.
-— Помогаешь с ремонтом, сопровождением, оформлением сделки, ипотекой через BasisBank.
-
-Точка на карте: https://maps.app.goo.gl/MSoSUbvZF8z3c3639?g_st=ipc
+— первый взнос от 20%, рассрочка без процентов до 10 мес
+— акционные варианты — до 18 мес при 30% взносе
+— оплата на счёт застройщика
+— бронь 2 недели \$100, задаток \$1000 на месяц
 
 Если спросят про дом Thalassa: 'ЖК Thalassa Group — газ, бассейн, спортзал, сдача в этом году, 135 квартир, надёжный застройщик.'
 
-Если спрашивают акции — объясни две опции (см. выше), уточни про рассрочку или платёж сразу.
-
-ВАЖНО: База квартир обновляется автоматически из Google Sheets каждые 5 минут, поэтому информация всегда актуальная!
-
 $base_stats
-Вот актуальная база квартир:
+
+База квартир (используй только после выяснения потребностей):
 $base_info
 "
         ]
