@@ -4,7 +4,7 @@ ini_set('display_errors', 1);
 
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
-$admin_chat_id = "5235599694";
+$admin_chat_id = "7770604629";
 
 // ====== ПРОВЕРКА НА ДУБЛИКАТЫ ЗАПРОСОВ ======
 $content = file_get_contents("php://input");
@@ -361,46 +361,74 @@ function save_last_subscription_check($chat_id) {
 function handle_booking_process($chat_id, $user_message, $user_state, $user_name, $token, $admin_chat_id) {
     $state = $user_state['state'];
     $data = $user_state['data'];
-    
+
     switch ($state) {
         case 'booking_time':
             $data['time'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_phone', 'data' => $data]);
-            return "Отлично! Теперь укажите ваш номер телефона:";
-            
+            return "Отлично! Теперь укажите ваш номер телефона (пример: +9955...):";
+
         case 'booking_phone':
+            $phone = preg_replace('/\D+/', '', $user_message);
+            if (strlen($phone) < 9) {
+                return "Похоже, номер некорректный. Пожалуйста, отправьте номер ещё раз, например: +995599000000";
+            }
             $data['phone'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_name', 'data' => $data]);
             return "Как к вам обращаться? Укажите ваше имя:";
-            
+
         case 'booking_name':
+            if (mb_strlen($user_message) < 2) {
+                return "Похоже, имя слишком короткое. Пожалуйста, введите настоящее имя.";
+            }
             $data['client_name'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_budget', 'data' => $data]);
             return "Какой у вас бюджет на покупку? (укажите сумму в долларах)";
-            
+
         case 'booking_budget':
-            $data['budget'] = $user_message;
+            $budget = preg_replace('/[^\d]/', '', $user_message);
+            if (intval($budget) < 10000) {
+                return "Пожалуйста, укажите реальный бюджет (например: 45000).";
+            }
+            $data['budget'] = $budget;
             save_user_state($chat_id, ['state' => 'booking_payment', 'data' => $data]);
             return "Планируете покупать сразу за полную стоимость или в рассрочку?";
-            
+
         case 'booking_payment':
+            $valid = false;
+            $lower = mb_strtolower($user_message);
+            foreach (['рассрочка', 'полная', 'сразу', 'в рассрочку', 'оплата'] as $w) {
+                if (mb_stripos($lower, $w) !== false) $valid = true;
+            }
+            if (!$valid) {
+                return "Пожалуйста, напишите: \"сразу\" или \"рассрочка\"";
+            }
             $data['payment_type'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_timeline', 'data' => $data]);
             return "Когда планируете выйти на сделку? (например: в течение месяца, через 3 месяца и т.д.)";
-            
+
         case 'booking_timeline':
+            if (mb_strlen($user_message) < 2) {
+                return "Пожалуйста, укажите примерный срок, когда хотите купить квартиру.";
+            }
             $data['timeline'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_decision_maker', 'data' => $data]);
             return "Кто принимает окончательное решение о покупке? (вы лично, с супругом/супругой, с родителями и т.д.)";
-            
+
         case 'booking_decision_maker':
+            if (mb_strlen($user_message) < 2) {
+                return "Пожалуйста, укажите, кто принимает решение о покупке.";
+            }
             $data['decision_maker'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_purpose', 'data' => $data]);
             return "С какой целью покупаете недвижимость? (для проживания, инвестиций, сдачи в аренду и т.д.)";
-            
+
         case 'booking_purpose':
+            if (mb_strlen($user_message) < 2) {
+                return "Пожалуйста, укажите цель покупки (жить, сдавать, инвестировать и т.д.)";
+            }
             $data['purpose'] = $user_message;
-            
+
             // Отправляем данные админу
             $admin_message = "🏠 НОВАЯ ЗАЯВКА НА ПОКАЗ\n\n";
             $admin_message .= "👤 Клиент: {$data['client_name']}\n";
@@ -415,15 +443,14 @@ function handle_booking_process($chat_id, $user_message, $user_state, $user_name
             $admin_message .= "👥 ЛПР: {$data['decision_maker']}\n";
             $admin_message .= "🎯 Цель: {$data['purpose']}\n";
             $admin_message .= "💬 Telegram: @{$user_name} (ID: {$chat_id})";
-            
+
             send_telegram_message($token, $admin_chat_id, $admin_message);
-            
+
             // Сбрасываем состояние
             save_user_state($chat_id, ['state' => 'normal', 'data' => []]);
-            
+
             return "Отлично! Ваша заявка принята. Сергей свяжется с вами лично для уточнения всех деталей показа. Спасибо за обращение! 🏠";
     }
-    
     return "Что-то пошло не так. Попробуйте еще раз.";
 }
 
