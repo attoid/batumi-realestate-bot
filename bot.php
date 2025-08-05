@@ -5,6 +5,32 @@ ini_set('display_errors', 1);
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
 
+// ====== ПРОВЕРКА НА ДУБЛИКАТЫ ЗАПРОСОВ ======
+$content = file_get_contents("php://input");
+if ($content === false) {
+    error_log("Failed to read input");
+    exit;
+}
+
+$update = json_decode($content, true);
+if ($update === null) {
+    error_log("Failed to decode JSON input");
+    exit;
+}
+
+// Защита от дублирования
+$request_id = $update["update_id"] ?? time();
+$lock_file = __DIR__ . "/locks/{$request_id}.lock";
+$lock_dir = dirname($lock_file);
+if (!file_exists($lock_dir)) {
+    mkdir($lock_dir, 0777, true);
+}
+if (file_exists($lock_file)) {
+    error_log("Duplicate request detected: $request_id");
+    exit;
+}
+file_put_contents($lock_file, time());
+
 // ====== ФУНКЦИЯ ПОЛУЧЕНИЯ ДАННЫХ ИЗ GOOGLE SHEETS ======
 function get_apartments_from_sheets() {
     // Пробуем разные варианты ссылок
@@ -312,19 +338,6 @@ function save_last_subscription_check($chat_id) {
     file_put_contents($dir . "/{$chat_id}.txt", time());
 }
 
-// ====== ОСНОВНОЙ КОД ======
-$content = file_get_contents("php://input");
-if ($content === false) {
-    error_log("Failed to read input");
-    exit;
-}
-
-$update = json_decode($content, true);
-if ($update === null) {
-    error_log("Failed to decode JSON input");
-    exit;
-}
-
 // ====== ПОЛУЧАЕМ КВАРТИРЫ ======
 $apartments = get_apartments_from_sheets();
 
@@ -333,6 +346,8 @@ if (isset($update["message"])) {
     $user_message = trim($update["message"]["text"] ?? "");
     $user_name = $update["message"]["from"]["first_name"] ?? "друг";
     $user_id = $update["message"]["from"]["id"];
+
+    error_log("Processing message from user $user_name ($user_id): $user_message");
 
     // ====== ДЕБАГ - только в логи, не пользователю ======
     if (!empty($apartments)) {
@@ -464,8 +479,13 @@ $base_info
     // ====== ДОБАВЛЯЕМ НОВОЕ СООБЩЕНИЕ ======
     $messages[] = ["role" => "user", "content" => $user_message];
 
+    error_log("Sending request to GPT with " . count($messages) . " messages");
+    error_log("Last user message: " . $user_message);
+
     // ====== GPT-ЗАПРОС ======
     $answer = ask_gpt($messages, $openai_key);
+    
+    error_log("GPT response: " . substr($answer, 0, 100) . "...");
 
     // ====== СОХРАНЯЕМ ИСТОРИЮ ======
     $history[] = ["role" => "user", "content" => $user_message];
@@ -473,6 +493,18 @@ $base_info
     save_chat_history($chat_id, $history);
 
     // ====== ОТПРАВЛЯЕМ ОТВЕТ ======
-    send_telegram_message($token, $chat_id, $answer);
+    $telegram_result = send_telegram_message($token, $chat_id, $answer);
+    error_log("Telegram send result: " . ($telegram_result ? "SUCCESS" : "FAILED"));
+}
+
+// Очищаем старые lock файлы (старше 1 минуты)
+$lock_dir = __DIR__ . '/locks';
+if (is_dir($lock_dir)) {
+    $files = glob($lock_dir . '/*.lock');
+    foreach ($files as $file) {
+        if (filemtime($file) < time() - 60) {
+            unlink($file);
+        }
+    }
 }
 ?>
