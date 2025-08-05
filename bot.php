@@ -4,7 +4,7 @@ ini_set('display_errors', 1);
 
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
-$admin_chat_id = "5235599694"; //
+$admin_chat_id = "YOUR_ADMIN_CHAT_ID"; // Замените на ваш chat_id
 
 // ====== ПРОВЕРКА НА ДУБЛИКАТЫ ЗАПРОСОВ ======
 $content = file_get_contents("php://input");
@@ -492,14 +492,15 @@ if (isset($update["message"])) {
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
     $history = get_chat_history($chat_id);
     
-    // Определяем, является ли это первым обращением
-    $is_first_message = empty($history) || trim(strtolower($user_message)) === '/start';
-    
     // Очищаем историю при команде /start
     if (trim(strtolower($user_message)) === '/start') {
         $history = [];
         save_chat_history($chat_id, []);
+        $is_first_message = true;
         error_log("Chat history cleared for /start command");
+    } else {
+        // Определяем, является ли это первым обращением (если история пустая)
+        $is_first_message = empty($history);
     }
 
     // Сохраняем данные для отладки
@@ -527,7 +528,7 @@ if (isset($update["message"])) {
     // ====== SYSTEM PROMPT ======
     $greeting_instruction = $is_first_message ? 
         "ВАЖНО: Это первое сообщение от пользователя. Поздоровайся с ним по имени и СРАЗУ спроси про район интересов." : 
-        "ВАЖНО: Пользователь уже общался с тобой ранее. НЕ здоровайся повторно! Продолжай диалог по существу.";
+        "КРИТИЧЕСКИ ВАЖНО: Пользователь уже общался с тобой ранее. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО здороваться повторно! НЕ говори 'Привет', 'Рад тебя видеть' и подобное. Продолжай диалог сразу по существу, отвечая на его вопрос.";
 
     $messages = [
         [
