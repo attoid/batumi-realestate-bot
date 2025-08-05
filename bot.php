@@ -14,31 +14,44 @@ function get_apartments_from_sheets() {
     // Кэширование
     if (file_exists($cache_file) && (time() - filemtime($cache_file)) < $cache_time) {
         $cached_data = file_get_contents($cache_file);
-        return json_decode($cached_data, true);
+        $result = json_decode($cached_data, true);
+        error_log("Using cached data: " . count($result) . " apartments");
+        return $result;
     }
+
+    error_log("Fetching fresh data from Google Sheets: $sheet_url");
 
     // Получаем данные из Google Sheets
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $sheet_url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (compatible; PHP Bot)');
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    
     $csv_data = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
     curl_close($ch);
 
     if ($csv_data === false || $http_code !== 200) {
-        error_log("Failed to fetch Google Sheets data: HTTP $http_code");
+        error_log("Failed to fetch Google Sheets data: HTTP $http_code, Error: $error");
         // Возвращаем кэшированные данные если есть
         if (file_exists($cache_file)) {
+            error_log("Returning cached data due to fetch failure");
             $cached_data = file_get_contents($cache_file);
             return json_decode($cached_data, true);
         }
+        error_log("No cached data available, returning empty array");
         return []; // Если ничего нет — пусто
     }
 
+    error_log("Successfully fetched data, size: " . strlen($csv_data) . " bytes");
+
     // Парсим CSV
     $apartments = parse_csv_to_apartments($csv_data);
+    error_log("Parsed " . count($apartments) . " apartments from CSV");
 
     // Сохраняем в кэш
     $cache_dir = dirname($cache_file);
@@ -46,6 +59,7 @@ function get_apartments_from_sheets() {
         mkdir($cache_dir, 0777, true);
     }
     file_put_contents($cache_file, json_encode($apartments, JSON_UNESCAPED_UNICODE));
+    error_log("Data saved to cache");
 
     return $apartments;
 }
@@ -54,14 +68,27 @@ function get_apartments_from_sheets() {
 function parse_csv_to_apartments($csv_data) {
     $lines = explode("\n", trim($csv_data));
     $apartments = [];
-    // Пропускаем заголовки (первые 4 строки)
+    
+    error_log("CSV has " . count($lines) . " lines");
+    
+    // Выводим первые 3 строки для отладки
+    for ($debug_i = 0; $debug_i < min(3, count($lines)); $debug_i++) {
+        error_log("Line $debug_i: " . $lines[$debug_i]);
+    }
+    
+    // Пропускаем заголовки (первую строку)
     for ($i = 1; $i < count($lines); $i++) {
         $line = trim($lines[$i]);
         if (empty($line)) continue;
+        
         $data = str_getcsv($line);
+        error_log("Line $i parsed into " . count($data) . " columns: " . implode(" | ", $data));
 
         // Должно быть хотя бы 7 колонок: этаж, номер, площадь, вид, цена, сумма, жк
-        if (count($data) < 7) continue;
+        if (count($data) < 7) {
+            error_log("Skipping line $i - not enough columns");
+            continue;
+        }
 
         $apartment = [
             'этаж' => (int)$data[0],
@@ -73,40 +100,18 @@ function parse_csv_to_apartments($csv_data) {
             'жк' => trim($data[6]),
             'статус' => 'Свободный'
         ];
+        
         if ($apartment['номер'] > 0 && $apartment['площадь'] > 0 && $apartment['общая_сумма'] > 0) {
             $apartments[] = $apartment;
+            error_log("Added apartment: " . json_encode($apartment));
+        } else {
+            error_log("Skipped invalid apartment: " . json_encode($apartment));
         }
     }
+    
+    error_log("Total apartments parsed: " . count($apartments));
     return $apartments;
 }
-
-// ====== ПОЛУЧАЕМ КВАРТИРЫ ======
-$apartments = get_apartments_from_sheets();
-
-// ====== ДЕБАГ — отправляем себе первые 3 квартиры ======
-if (!empty($apartments)) {
-    $debug_apartments = array_slice($apartments, 0, 3);
-    send_telegram_message($token, $chat_id, 
-        "DEMO: Вот первые 3 квартиры из базы:\n" .
-        json_encode($debug_apartments, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
-    );
-} else {
-    send_telegram_message($token, $chat_id, "DEMO: В массиве apartments НИЧЕГО нет!");
-}
-
-
-// ====== СТАТИСТИКА ПО БАЗЕ ======
-$studio_count = 0;
-$studio_min_price = null;
-$studio_max_price = null;
-foreach ($apartments as $a) {
-    if ($a['площадь'] <= 40) {
-        $studio_count++;
-        if (is_null($studio_min_price) || $a['общая_сумма'] < $studio_min_price) $studio_min_price = $a['общая_сумма'];
-        if (is_null($studio_max_price) || $a['общая_сумма'] > $studio_max_price) $studio_max_price = $a['общая_сумма'];
-    }
-}
-$base_stats = "В базе сейчас " . count($apartments) . " квартир, из них студий — $studio_count, цены студий: от \$$studio_min_price до \$$studio_max_price.";
 
 // ====== ФУНКЦИИ ИСТОРИИ ЧАТА ======
 function get_chat_history($chat_id) {
@@ -117,6 +122,7 @@ function get_chat_history($chat_id) {
     $decoded = json_decode($content, true);
     return $decoded === null ? [] : $decoded;
 }
+
 function save_chat_history($chat_id, $history) {
     $dir = __DIR__ . '/history';
     if (!file_exists($dir)) {
@@ -235,6 +241,7 @@ function get_last_subscription_check($chat_id) {
     $time = file_get_contents($file);
     return $time ? (int)$time : 0;
 }
+
 function save_last_subscription_check($chat_id) {
     $dir = __DIR__ . '/subscription_checks';
     if (!file_exists($dir)) {
@@ -249,16 +256,32 @@ if ($content === false) {
     error_log("Failed to read input");
     exit;
 }
+
 $update = json_decode($content, true);
 if ($update === null) {
     error_log("Failed to decode JSON input");
     exit;
 }
+
+// ====== ПОЛУЧАЕМ КВАРТИРЫ ======
+$apartments = get_apartments_from_sheets();
+
 if (isset($update["message"])) {
     $chat_id = $update["message"]["chat"]["id"];
     $user_message = trim($update["message"]["text"] ?? "");
     $user_name = $update["message"]["from"]["first_name"] ?? "друг";
     $user_id = $update["message"]["from"]["id"];
+
+    // ====== ДЕБАГ — отправляем информацию о базе ======
+    if (!empty($apartments)) {
+        $debug_apartments = array_slice($apartments, 0, 3);
+        send_telegram_message($token, $chat_id, 
+            "DEMO: В базе " . count($apartments) . " квартир. Вот первые 3:\n" .
+            json_encode($debug_apartments, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
+        );
+    } else {
+        send_telegram_message($token, $chat_id, "DEMO: В массиве apartments НИЧЕГО нет! Проверьте логи.");
+    }
 
     // Проверяем, не отправляли ли мы уже сообщение о подписке в последние 60 секунд
     $last_check = get_last_subscription_check($chat_id);
@@ -283,7 +306,21 @@ if (isset($update["message"])) {
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
     $history = get_chat_history($chat_id);
 
-file_put_contents(__DIR__.'/parse_debug.log', print_r($apartments,1));
+    // Сохраняем данные для отладки
+    file_put_contents(__DIR__.'/parse_debug.log', print_r($apartments, true));
+
+    // ====== СТАТИСТИКА ПО БАЗЕ ======
+    $studio_count = 0;
+    $studio_min_price = null;
+    $studio_max_price = null;
+    foreach ($apartments as $a) {
+        if ($a['площадь'] <= 40) {
+            $studio_count++;
+            if (is_null($studio_min_price) || $a['общая_сумма'] < $studio_min_price) $studio_min_price = $a['общая_сумма'];
+            if (is_null($studio_max_price) || $a['общая_сумма'] > $studio_max_price) $studio_max_price = $a['общая_сумма'];
+        }
+    }
+    $base_stats = "В базе сейчас " . count($apartments) . " квартир, из них студий — $studio_count, цены студий: от \$$studio_min_price до \$$studio_max_price.";
 
     // ====== СФОРМИРУЙ БАЗУ ДЛЯ ПРОМПТА ======
     $base_info = "";
