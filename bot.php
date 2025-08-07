@@ -374,16 +374,11 @@ function handle_booking_process($chat_id, $user_message, $user_state, $user_name
                 return "Похоже, номер некорректный. Пожалуйста, отправьте номер ещё раз, например: +995599000000";
             }
             $data['phone'] = $user_message;
-            save_user_state($chat_id, ['state' => 'booking_name', 'data' => $data]);
-            return "Как к вам обращаться? Укажите ваше имя:";
-
-        case 'booking_name':
-            if (mb_strlen($user_message) < 2) {
-                return "Похоже, имя слишком короткое. Пожалуйста, введите настоящее имя.";
-            }
-            $data['client_name'] = $user_message;
-            save_user_state($chat_id, ['state' => 'booking_budget', 'data' => $data]);
+            $data['client_name'] = $user_name;  // АВТОМАТИЧЕСКИ БЕРЕМ ИМЯ
+            save_user_state($chat_id, ['state' => 'booking_budget', 'data' => $data]);  // СРАЗУ ПЕРЕХОДИМ К БЮДЖЕТУ
             return "Какой у вас бюджет на покупку? (укажите сумму в долларах)";
+
+        // БЛОК booking_name УДАЛЕН - больше не нужен!
 
         case 'booking_budget':
             $budget = preg_replace('/[^\d]/', '', $user_message);
@@ -453,7 +448,6 @@ function handle_booking_process($chat_id, $user_message, $user_state, $user_name
     }
     return "Что-то пошло не так. Попробуйте еще раз.";
 }
-
 // ====== ПОЛУЧАЕМ КВАРТИРЫ ======
 $apartments = get_apartments_from_sheets();
 
@@ -466,6 +460,13 @@ if (isset($update["message"])) {
 
     error_log("Processing message from user $user_name ($user_id): $user_message");
 
+    // ====== ПОЛУЧАЕМ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ ======
+    $user_state = get_user_state($chat_id);
+
+        // ====== ПРОВЕРКА НА КОМАНДЫ ЗАПИСИ НА ПОКАЗ ======
+    $booking_keywords = ['показ', 'запись', 'записаться', 'хочу посмотреть', 'онлайн показ', 'онлайн-показ', 'встретиться', 'встреча'];
+    $message_lower = mb_strtolower($user_message);
+
     // ====== ДОБАВЛЕНИЕ "ЖИВОЙ" ВЕТКИ БЕЗ СОКРАЩЕНИЙ ======
 // Сохраняем этап сценария в отдельном файле, не мешая твоим states!
 $custom_state_file = __DIR__ . "/custom_state_{$chat_id}.json";
@@ -477,10 +478,7 @@ if (trim(strtolower($user_message)) === '/start') {
 }
 
 // Ветка только если НЕ в процессе "booking" и НЕ команда на показ
-if (
-    $user_state['state'] === 'normal' &&
-    !in_array(true, array_map(fn($kw) => strpos(mb_strtolower($user_message), $kw) !== false, $booking_keywords))
-) {
+if ($user_state['state'] === 'normal') { 
     // 0 — старт
     if ($custom_state["step"] === 0) {
         $custom_state["step"] = 1;
@@ -558,28 +556,12 @@ if (
         }
         exit;
     }
-
-    // ====== ПОЛУЧАЕМ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ ======
-    $user_state = get_user_state($chat_id);
     
     // ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
     if ($user_state['state'] !== 'normal') {
         $response = handle_booking_process($chat_id, $user_message, $user_state, $username, $token, $admin_chat_id);
         send_telegram_message($token, $chat_id, $response);
         exit;
-    }
-
-    // ====== ПРОВЕРКА НА КОМАНДЫ ЗАПИСИ НА ПОКАЗ ======
-    $booking_keywords = ['показ', 'запись', 'записаться', 'хочу посмотреть', 'онлайн показ', 'онлайн-показ', 'встретиться', 'встреча'];
-    $message_lower = mb_strtolower($user_message);
-    
-    foreach ($booking_keywords as $keyword) {
-        if (strpos($message_lower, $keyword) !== false) {
-            // Начинаем процесс записи на показ
-            save_user_state($chat_id, ['state' => 'booking_time', 'data' => ['apartment' => '']]);
-            send_telegram_message($token, $chat_id, "Отлично! Давайте запишем вас на показ. Укажите удобное для вас время:");
-            exit;
-        }
     }
 
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
