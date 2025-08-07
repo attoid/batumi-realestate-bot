@@ -6,7 +6,13 @@ $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
 $admin_chat_id = "7770604629";
 
-// ====== ПРОВЕРКА НА ДУБЛИКАТЫ ЗАПРОСОВ ======
+// ====== ХРАНИЛИЩА В ПАМЯТИ ВМЕСТО ФАЙЛОВ ======
+$chat_histories = [];
+$user_states = [];
+$apartments_cache = null;
+$cache_time = 0;
+
+// ====== ПОЛУЧЕНИЕ ВХОДЯЩИХ ДАННЫХ ======
 $content = file_get_contents("php://input");
 if ($content === false) {
     error_log("Failed to read input");
@@ -19,19 +25,6 @@ if ($update === null) {
     exit;
 }
 
-// Защита от дублирования
-$request_id = $update["update_id"] ?? time();
-$lock_file = __DIR__ . "/locks/{$request_id}.lock";
-$lock_dir = dirname($lock_file);
-if (!file_exists($lock_dir)) {
-    mkdir($lock_dir, 0777, true);
-}
-if (file_exists($lock_file)) {
-    error_log("Duplicate request detected: $request_id");
-    exit;
-}
-file_put_contents($lock_file, time());
-
 // ====== ФУНКЦИЯ ПОЛУЧЕНИЯ ДАННЫХ ИЗ GOOGLE SHEETS ======
 function get_apartments_from_sheets() {
     // Пробуем разные варианты ссылок
@@ -40,20 +33,13 @@ function get_apartments_from_sheets() {
         "https://docs.google.com/spreadsheets/d/e/2PACX-1vSiwJ2LTzkOdpQNfqNBnxz0SGcHPz36HHm6voblS_2SdAK2H5oO1-xbZt1yF3-Y-YlPiKIN5CAxZpVh/pub?gid=0&single=true&output=csv"
     ];
     
-    $cache_file = __DIR__ . '/cache/apartments.json';
-    $cache_time = 900; // Увеличиваем кэш до 15 минут чтобы меньше дергать Google
+   global $apartments_cache, $cache_time;
 
-    // Кэширование
-    if (file_exists($cache_file) && (time() - filemtime($cache_file)) < $cache_time) {
-        $cached_data = file_get_contents($cache_file);
-        $result = json_decode($cached_data, true);
-        if (!empty($result)) {
-            error_log("Using cached data: " . count($result) . " apartments");
-            return $result;
-        }
-    }
-
-    error_log("Fetching fresh data from Google Sheets");
+// Кеширование в памяти
+if ($apartments_cache !== null && (time() - $cache_time) < 900) {
+    error_log("Using cached data: " . count($apartments_cache) . " apartments");
+    return $apartments_cache;
+}
 
     // Пробуем разные ссылки
     foreach ($sheet_urls as $sheet_url) {
@@ -90,32 +76,22 @@ function get_apartments_from_sheets() {
             error_log("Parsed " . count($apartments) . " apartments from CSV");
             
             if (!empty($apartments)) {
-                // Сохраняем в кэш
-                $cache_dir = dirname($cache_file);
-                if (!file_exists($cache_dir)) {
-                    mkdir($cache_dir, 0777, true);
-                }
-                file_put_contents($cache_file, json_encode($apartments, JSON_UNESCAPED_UNICODE));
-                error_log("Data saved to cache");
-                return $apartments;
-            }
+
+    // Сохраняем в память
+    $apartments_cache = $apartments;
+    $cache_time = time();
+    error_log("Data saved to memory cache");
+    return $apartments;
+}
+            } // закрытие if ($csv_data !== false...)
         } else {
             error_log("Failed URL $sheet_url: HTTP $http_code, Error: $error");
         }
-    }
-
-    // Если все ссылки не сработали - возвращаем кэш
-    if (file_exists($cache_file)) {
-        error_log("All URLs failed, returning cached data");
-        $cached_data = file_get_contents($cache_file);
-        $result = json_decode($cached_data, true);
-        return $result ?: [];
-    }
+    } // закрытие foreach
     
     error_log("No data available, returning test data");
-    // Возвращаем тестовые данные если ничего не работает
     return get_test_apartments();
-}
+} // закрытие функции
 
 // ====== ТЕСТОВЫЕ ДАННЫЕ НА СЛУЧАЙ ПРОБЛЕМ С GOOGLE SHEETS ======
 function get_test_apartments() {
@@ -152,6 +128,7 @@ function get_test_apartments() {
         ]
     ];
 }
+
 
 // ====== ФУНКЦИЯ ПАРСИНГА CSV ======
 function parse_csv_to_apartments($csv_data) {
@@ -204,46 +181,26 @@ function parse_csv_to_apartments($csv_data) {
 
 // ====== ФУНКЦИИ ИСТОРИИ ЧАТА ======
 function get_chat_history($chat_id) {
-    $file = __DIR__ . "/history/{$chat_id}.json";
-    if (!file_exists($file)) return [];
-    $content = file_get_contents($file);
-    if ($content === false) return [];
-    $decoded = json_decode($content, true);
-    return $decoded === null ? [] : $decoded;
+    global $chat_histories;
+    return $chat_histories[$chat_id] ?? [];
 }
 
 function save_chat_history($chat_id, $history) {
-    $dir = __DIR__ . '/history';
-    if (!file_exists($dir)) {
-        if (!mkdir($dir, 0777, true)) {
-            error_log("Failed to create history directory");
-            return false;
-        }
-    }
-    $result = file_put_contents($dir . "/{$chat_id}.json", json_encode($history, JSON_UNESCAPED_UNICODE));
-    if ($result === false) {
-        error_log("Failed to save chat history for chat_id: $chat_id");
-        return false;
-    }
+    global $chat_histories;
+    $chat_histories[$chat_id] = $history;
     return true;
 }
 
 // ====== ФУНКЦИИ СОСТОЯНИЯ ПОЛЬЗОВАТЕЛЯ ======
 function get_user_state($chat_id) {
-    $file = __DIR__ . "/states/{$chat_id}.json";
-    if (!file_exists($file)) return ['state' => 'normal', 'data' => []];
-    $content = file_get_contents($file);
-    if ($content === false) return ['state' => 'normal', 'data' => []];
-    $decoded = json_decode($content, true);
-    return $decoded === null ? ['state' => 'normal', 'data' => []] : $decoded;
+    global $user_states;
+    return $user_states[$chat_id] ?? ['state' => 'normal', 'data' => []];
 }
 
 function save_user_state($chat_id, $state) {
-    $dir = __DIR__ . '/states';
-    if (!file_exists($dir)) {
-        mkdir($dir, 0777, true);
-    }
-    file_put_contents($dir . "/{$chat_id}.json", json_encode($state, JSON_UNESCAPED_UNICODE));
+    global $user_states;
+    $user_states[$chat_id] = $state;
+    return true;
 }
 
 // ====== ФУНКЦИЯ ОТПРАВКИ СООБЩЕНИЯ ======
