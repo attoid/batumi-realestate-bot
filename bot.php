@@ -243,7 +243,11 @@ function save_user_state($chat_id, $state) {
     if (!file_exists($dir)) {
         mkdir($dir, 0777, true);
     }
-    file_put_contents($dir . "/{$chat_id}.json", json_encode($state, JSON_UNESCAPED_UNICODE));
+    $result = file_put_contents($dir . "/{$chat_id}.json", json_encode($state, JSON_UNESCAPED_UNICODE));
+    if ($result === false) {
+        error_log("Failed to save user state for chat_id: $chat_id");
+    }
+    return $result !== false;
 }
 
 // ====== ФУНКЦИЯ ОТПРАВКИ СООБЩЕНИЯ ======
@@ -266,7 +270,7 @@ function send_telegram_message($token, $chat_id, $text) {
     curl_close($ch);
 
     if ($result === false || $http_code !== 200) {
-        error_log("Failed to send Telegram message: HTTP $http_code");
+        error_log("Failed to send Telegram message: HTTP $http_code, Result: $result");
         return false;
     }
 
@@ -357,101 +361,108 @@ function save_last_subscription_check($chat_id) {
     file_put_contents($dir . "/{$chat_id}.txt", time());
 }
 
-// ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
-function handle_booking_process($chat_id, $user_message, $user_state, $user_name, $token, $admin_chat_id) {
+// ====== УЛУЧШЕННАЯ ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
+function handle_booking_process($chat_id, $user_message, $user_state, $user_first_name, $username, $token, $admin_chat_id) {
     $state = $user_state['state'];
     $data = $user_state['data'];
+
+    error_log("Booking process: state=$state, user_message='$user_message'");
 
     switch ($state) {
         case 'booking_time':
             $data['time'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_phone', 'data' => $data]);
-            return "Отлично! Теперь укажите ваш номер телефона (пример: +9955...):";
+            return "Отлично! Теперь укажите ваш номер телефона для связи:";
 
         case 'booking_phone':
-            $phone = preg_replace('/\D+/', '', $user_message);
-            if (strlen($phone) < 9) {
-                return "Похоже, номер некорректный. Пожалуйста, отправьте номер ещё раз, например: +995599000000";
+            // Более гибкая проверка номера телефона
+            $phone_clean = preg_replace('/[^\d+]/', '', $user_message);
+            if (strlen($phone_clean) < 8) {
+                return "Пожалуйста, укажите корректный номер телефона (например: +995599123456 или 599123456):";
             }
             $data['phone'] = $user_message;
-            save_user_state($chat_id, ['state' => 'booking_name', 'data' => $data]);
-            return "Как к вам обращаться? Укажите ваше имя:";
+            
+            // Используем имя из Telegram, если есть, иначе спрашиваем
+            if (!empty($user_first_name) && mb_strlen($user_first_name) >= 2) {
+                $data['client_name'] = $user_first_name;
+                save_user_state($chat_id, ['state' => 'booking_budget', 'data' => $data]);
+                return "Отлично, $user_first_name! Какой у вас примерный бюджет на покупку? (например: 50000$)";
+            } else {
+                save_user_state($chat_id, ['state' => 'booking_name', 'data' => $data]);
+                return "Как к вам обращаться? Укажите ваше имя:";
+            }
 
         case 'booking_name':
-            if (mb_strlen($user_message) < 2) {
-                return "Похоже, имя слишком короткое. Пожалуйста, введите настоящее имя.";
+            if (mb_strlen(trim($user_message)) < 2) {
+                return "Пожалуйста, укажите ваше имя:";
             }
-            $data['client_name'] = $user_message;
+            $data['client_name'] = trim($user_message);
             save_user_state($chat_id, ['state' => 'booking_budget', 'data' => $data]);
-            return "Какой у вас бюджет на покупку? (укажите сумму в долларах)";
+            return "Отлично! Какой у вас примерный бюджет на покупку? (например: 50000$)";
 
         case 'booking_budget':
-            $budget = preg_replace('/[^\d]/', '', $user_message);
-            if (intval($budget) < 10000) {
-                return "Пожалуйста, укажите реальный бюджет (например: 45000).";
+            // Более гибкий парсинг бюджета
+            $budget_numbers = preg_replace('/[^\d]/', '', $user_message);
+            $budget = intval($budget_numbers);
+            
+            if ($budget < 5000) {
+                return "Пожалуйста, укажите реальный бюджет в долларах (например: 45000 или 50000$):";
             }
+            
             $data['budget'] = $budget;
             save_user_state($chat_id, ['state' => 'booking_payment', 'data' => $data]);
-            return "Планируете покупать сразу за полную стоимость или в рассрочку?";
+            return "Планируете покупать сразу за полную стоимость или рассматриваете рассрочку?";
 
         case 'booking_payment':
-            $valid = false;
-            $lower = mb_strtolower($user_message);
-            foreach (['рассрочка', 'полная', 'сразу', 'в рассрочку', 'оплата'] as $w) {
-                if (mb_stripos($lower, $w) !== false) $valid = true;
-            }
-            if (!$valid) {
-                return "Пожалуйста, напишите: \"сразу\" или \"рассрочка\"";
-            }
             $data['payment_type'] = $user_message;
             save_user_state($chat_id, ['state' => 'booking_timeline', 'data' => $data]);
-            return "Когда планируете выйти на сделку? (например: в течение месяца, через 3 месяца и т.д.)";
+            return "В какие сроки планируете совершить покупку? (например: в ближайшие 2 месяца)";
 
         case 'booking_timeline':
-            if (mb_strlen($user_message) < 2) {
-                return "Пожалуйста, укажите примерный срок, когда хотите купить квартиру.";
-            }
             $data['timeline'] = $user_message;
-            save_user_state($chat_id, ['state' => 'booking_decision_maker', 'data' => $data]);
-            return "Кто принимает окончательное решение о покупке? (вы лично, с супругом/супругой, с родителями и т.д.)";
+            save_user_state($chat_id, ['state' => 'booking_final', 'data' => $data]);
+            return "Есть ли дополнительные пожелания или вопросы по квартире? (можно написать \"нет\")";
 
-        case 'booking_decision_maker':
-            if (mb_strlen($user_message) < 2) {
-                return "Пожалуйста, укажите, кто принимает решение о покупке.";
-            }
-            $data['decision_maker'] = $user_message;
-            save_user_state($chat_id, ['state' => 'booking_purpose', 'data' => $data]);
-            return "С какой целью покупаете недвижимость? (для проживания, инвестиций, сдачи в аренду и т.д.)";
+        case 'booking_final':
+            $data['additional_info'] = $user_message;
 
-        case 'booking_purpose':
-            if (mb_strlen($user_message) < 2) {
-                return "Пожалуйста, укажите цель покупки (жить, сдавать, инвестировать и т.д.)";
-            }
-            $data['purpose'] = $user_message;
-
-            // Отправляем данные админу
+            // Формируем подробное сообщение для админа
             $admin_message = "🏠 НОВАЯ ЗАЯВКА НА ПОКАЗ\n\n";
-            $admin_message .= "👤 Клиент: {$data['client_name']}\n";
-            $admin_message .= "📱 Телефон: {$data['phone']}\n";
-            $admin_message .= "🕐 Время показа: {$data['time']}\n";
-            if (!empty($data['apartment'])) {
-                $admin_message .= "🏢 Квартира: {$data['apartment']}\n";
+            $admin_message .= "👤 Клиент: " . ($data['client_name'] ?? $user_first_name ?? 'Не указано') . "\n";
+            $admin_message .= "📱 Телефон: " . ($data['phone'] ?? 'Не указан') . "\n";
+            $admin_message .= "🕐 Время показа: " . ($data['time'] ?? 'Не указано') . "\n";
+            $admin_message .= "💰 Бюджет: $" . ($data['budget'] ?? 'Не указан') . "\n";
+            $admin_message .= "💳 Способ оплаты: " . ($data['payment_type'] ?? 'Не указано') . "\n";
+            $admin_message .= "📅 Сроки покупки: " . ($data['timeline'] ?? 'Не указано') . "\n";
+            $admin_message .= "📝 Доп. информация: " . ($data['additional_info'] ?? 'Нет') . "\n";
+            $admin_message .= "💬 Telegram: @" . ($username ?? 'нет_username') . " (ID: {$chat_id})\n";
+            
+            // Добавляем информацию из живой ветки, если есть
+            if (!empty($data['motivation'])) {
+                $admin_message .= "🎯 Мотивация: " . $data['motivation'] . "\n";
             }
-            $admin_message .= "💰 Бюджет: {$data['budget']}\n";
-            $admin_message .= "💳 Оплата: {$data['payment_type']}\n";
-            $admin_message .= "📅 Сделка: {$data['timeline']}\n";
-            $admin_message .= "👥 ЛПР: {$data['decision_maker']}\n";
-            $admin_message .= "🎯 Цель: {$data['purpose']}\n";
-            $admin_message .= "💬 Telegram: @{$user_name} (ID: {$chat_id})";
+            if (!empty($data['district'])) {
+                $admin_message .= "🗺️ Интересующий район: " . $data['district'] . "\n";
+            }
 
-            send_telegram_message($token, $admin_chat_id, $admin_message);
+            // Отправляем админу
+            $admin_result = send_telegram_message($token, $admin_chat_id, $admin_message);
+            
+            // Логируем результат отправки
+            if ($admin_result) {
+                error_log("Successfully sent booking to admin: " . json_encode($admin_result));
+            } else {
+                error_log("Failed to send booking to admin for chat_id: $chat_id");
+            }
 
             // Сбрасываем состояние
             save_user_state($chat_id, ['state' => 'normal', 'data' => []]);
 
-            return "Отлично! Ваша заявка принята. Сергей свяжется с вами лично для уточнения всех деталей показа. Спасибо за обращение! 🏠";
+            return "Отлично! ✅ Ваша заявка принята. Сергей свяжется с вами в ближайшее время для организации показа.\n\nСпасибо за обращение! 🏠";
     }
-    return "Что-то пошло не так. Попробуйте еще раз.";
+    
+    error_log("Unknown booking state: $state");
+    return "Что-то пошло не так. Давайте начнем сначала - напишите «запись на показ».";
 }
 
 // ====== ПОЛУЧАЕМ КВАРТИРЫ ======
@@ -460,90 +471,118 @@ $apartments = get_apartments_from_sheets();
 if (isset($update["message"])) {
     $chat_id = $update["message"]["chat"]["id"];
     $user_message = trim($update["message"]["text"] ?? "");
-    $user_name = $update["message"]["from"]["first_name"] ?? "друг";
+    $user_first_name = $update["message"]["from"]["first_name"] ?? "";
     $user_id = $update["message"]["from"]["id"];
     $username = $update["message"]["from"]["username"] ?? "нет_username";
 
-    error_log("Processing message from user $user_name ($user_id): $user_message");
+    error_log("Processing message from user $user_first_name ($user_id): $user_message");
 
-    // ====== ДОБАВЛЕНИЕ "ЖИВОЙ" ВЕТКИ БЕЗ СОКРАЩЕНИЙ ======
-// Сохраняем этап сценария в отдельном файле, не мешая твоим states!
-$custom_state_file = __DIR__ . "/custom_state_{$chat_id}.json";
-$custom_state = file_exists($custom_state_file) ? json_decode(file_get_contents($custom_state_file), true) : ["step" => 0, "data" => []];
+    // ====== УЛУЧШЕННАЯ "ЖИВАЯ" ВЕТКА ======
+    $custom_state_file = __DIR__ . "/custom_state_{$chat_id}.json";
+    $custom_state = file_exists($custom_state_file) ? json_decode(file_get_contents($custom_state_file), true) : ["step" => 0, "data" => []];
 
-// /start всегда сбрасывает живой сценарий
-if (trim(strtolower($user_message)) === '/start') {
-    file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
-}
+    // /start всегда сбрасывает живой сценарий
+    if (trim(strtolower($user_message)) === '/start') {
+        file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
+    }
 
-// Ветка только если НЕ в процессе "booking" и НЕ команда на показ
-if (
-    $user_state['state'] === 'normal' &&
-    !in_array(true, array_map(fn($kw) => strpos(mb_strtolower($user_message), $kw) !== false, $booking_keywords))
-) {
-    // 0 — старт
-    if ($custom_state["step"] === 0) {
-        $custom_state["step"] = 1;
-        file_put_contents($custom_state_file, json_encode($custom_state));
-        send_telegram_message($token, $chat_id, "Привет, $user_name! Подскажи, для чего смотришь недвижимость в Батуми? (Жить, инвестиции, отдых, другое)");
-        exit;
-    }
-    // 1 — выясняем район
-    if ($custom_state["step"] === 1) {
-        $custom_state["data"]["motivation"] = $user_message;
-        $custom_state["step"] = 2;
-        file_put_contents($custom_state_file, json_encode($custom_state));
-        send_telegram_message($token, $chat_id, "Спасибо! А какой район интересен? (Махинджаури, Новый Бульвар, Старый город, или свой вариант)");
-        exit;
-    }
-    // 2 — примеры квартир, призыв на онлайн-показ
-    if ($custom_state["step"] === 2) {
-        $custom_state["data"]["district"] = $user_message;
-        $custom_state["step"] = 3;
-        file_put_contents($custom_state_file, json_encode($custom_state));
-        $district = mb_strtolower($custom_state["data"]["district"]);
-        $examples = [
-            "махинджаури" => "— Студия 29 м² у моря — \$32,800\n— 1+1, 42 м² — \$53,000\n",
-            "новый бульвар" => "— Студия 35 м² — \$39,500\n— 1+1, 50 м² — \$56,000\n",
-            "старый город" => "— Студия 28 м² — \$44,000\n— 1+1, 41 м² — \$59,500\n"
-        ];
-        $answer = $examples[$district] ?? "— Студии от \$32,000, 1+1 от \$50,000 (есть во всех районах)";
-        send_telegram_message($token, $chat_id, "Вот примеры:\n$answer\nХочешь увидеть квартиру по видеосвязи? Напиши «онлайн-показ» — это бесплатно, покажу всё вживую.");
-        exit;
-    }
-    // 3 — ждем согласия на показ/запись
-    if ($custom_state["step"] === 3) {
-        if (mb_stripos($user_message, 'показ') !== false || mb_stripos($user_message, 'запис') !== false) {
-            // Сохраняем этап + мягко передаём дальше в твою анкету booking_time
-            file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
-            save_user_state($chat_id, ['state' => 'booking_time', 'data' => [
-                'apartment' => '', // можно дописать, если надо
-                'motivation' => $custom_state["data"]["motivation"] ?? '',
-                'district' => $custom_state["data"]["district"] ?? ''
-            ]]);
-            send_telegram_message($token, $chat_id, "Отлично! Давайте согласуем время для онлайн-показа. Укажите удобное время:");
-            exit;
-        } else {
-            send_telegram_message($token, $chat_id, "Если интересно посмотреть — напиши «онлайн-показ». Или уточни: бюджет, этаж, вид — помогу подобрать под тебя.");
-            exit;
+    // Проверяем, не в процессе ли записи на показ
+    $user_state = get_user_state($chat_id);
+    
+    // Ключевые слова для записи на показ
+    $booking_keywords = ['показ', 'запись', 'записаться', 'хочу посмотреть', 'онлайн показ', 'онлайн-показ', 'встретиться', 'встреча'];
+    $message_lower = mb_strtolower($user_message);
+    
+    $is_booking_request = false;
+    foreach ($booking_keywords as $keyword) {
+        if (strpos($message_lower, $keyword) !== false) {
+            $is_booking_request = true;
+            break;
         }
     }
-}
-// ====== КОНЕЦ БЛОКА "ЖИВОЙ ВЕТКИ" ======
 
-
-    // ====== ДЕБАГ - только в логи, не пользователю ======
-    if (!empty($apartments)) {
-        error_log("DEBUG: Database loaded successfully - " . count($apartments) . " apartments available");
-    } else {
-        error_log("DEBUG: No apartments loaded from database!");
+    // ОБРАБОТКА ЗАПИСИ НА ПОКАЗ (приоритет!)
+    if ($user_state['state'] !== 'normal') {
+        error_log("User in booking process, state: " . $user_state['state']);
+        $response = handle_booking_process($chat_id, $user_message, $user_state, $user_first_name, $username, $token, $admin_chat_id);
+        send_telegram_message($token, $chat_id, $response);
+        exit;
     }
 
-    // Проверяем, не отправляли ли мы уже сообщение о подписке в последние 60 секунд
+    // НАЧАЛО ЗАПИСИ НА ПОКАЗ
+    if ($is_booking_request) {
+        error_log("Starting booking process for user $user_id");
+        // Сохраняем данные из живой ветки, если есть
+        $booking_data = [];
+        if (!empty($custom_state['data']['motivation'])) {
+            $booking_data['motivation'] = $custom_state['data']['motivation'];
+        }
+        if (!empty($custom_state['data']['district'])) {
+            $booking_data['district'] = $custom_state['data']['district'];
+        }
+        
+        // Сбрасываем живую ветку
+        file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
+        
+        save_user_state($chat_id, ['state' => 'booking_time', 'data' => $booking_data]);
+        send_telegram_message($token, $chat_id, "Отлично! Давайте запишем вас на показ квартир. Укажите удобное время (день и время):");
+        exit;
+    }
+
+    // ЖИВАЯ ВЕТКА (только если НЕ в процессе записи)
+    if ($user_state['state'] === 'normal') {
+        if ($custom_state["step"] === 0) {
+            $custom_state["step"] = 1;
+            file_put_contents($custom_state_file, json_encode($custom_state));
+            send_telegram_message($token, $chat_id, "Привет, $user_first_name! Подскажи, для чего смотришь недвижимость в Батуми? (Жить, инвестиции, отдых, другое)");
+            exit;
+        }
+        
+        if ($custom_state["step"] === 1) {
+            $custom_state["data"]["motivation"] = $user_message;
+            $custom_state["step"] = 2;
+            file_put_contents($custom_state_file, json_encode($custom_state));
+            send_telegram_message($token, $chat_id, "Спасибо! А какой район интересен? (Махинджаури, Новый Бульвар, Старый город, или свой вариант)");
+            exit;
+        }
+        
+        if ($custom_state["step"] === 2) {
+            $custom_state["data"]["district"] = $user_message;
+            $custom_state["step"] = 3;
+            file_put_contents($custom_state_file, json_encode($custom_state));
+            $district = mb_strtolower($custom_state["data"]["district"]);
+            $examples = [
+                "махинджаури" => "— Студия 29 м² у моря — \$32,800\n— 1+1, 42 м² — \$53,000\n",
+                "новый бульвар" => "— Студия 35 м² — \$39,500\n— 1+1, 50 м² — \$56,000\n",
+                "старый город" => "— Студия 28 м² — \$44,000\n— 1+1, 41 м² — \$59,500\n"
+            ];
+            $answer = $examples[$district] ?? "— Студии от \$32,000, 1+1 от \$50,000 (есть во всех районах)";
+            send_telegram_message($token, $chat_id, "Вот примеры:\n$answer\n\nХочешь увидеть квартиры по видеосвязи? Напиши «онлайн-показ» — это бесплатно, покажу всё вживую! 📱");
+            exit;
+        }
+        
+        if ($custom_state["step"] === 3) {
+            if (mb_stripos($user_message, 'показ') !== false || mb_stripos($user_message, 'запис') !== false) {
+                // Переходим к записи на показ
+                $booking_data = [
+                    'motivation' => $custom_state["data"]["motivation"] ?? '',
+                    'district' => $custom_state["data"]["district"] ?? ''
+                ];
+                file_put_contents($custom_state_file, json_encode(["step" => 0, "data" => []]));
+                save_user_state($chat_id, ['state' => 'booking_time', 'data' => $booking_data]);
+                send_telegram_message($token, $chat_id, "Отлично! Давайте согласуем время для онлайн-показа. Укажите удобное время:");
+                exit;
+            } else {
+                send_telegram_message($token, $chat_id, "Если интересно посмотреть — напиши «онлайн-показ». Или уточни: бюджет, этаж, вид — помогу подобрать под тебя.");
+                exit;
+            }
+        }
+    }
+
+    // ====== ПРОВЕРКА ПОДПИСКИ ======
     $last_check = get_last_subscription_check($chat_id);
     $current_time = time();
 
-    // ====== ПРОВЕРКА ПОДПИСКИ ======
     $channel = "@smkornaukhovv";
     $is_member = check_subscription($token, $channel, $user_id);
 
@@ -557,29 +596,6 @@ if (
             save_last_subscription_check($chat_id);
         }
         exit;
-    }
-
-    // ====== ПОЛУЧАЕМ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ ======
-    $user_state = get_user_state($chat_id);
-    
-    // ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
-    if ($user_state['state'] !== 'normal') {
-        $response = handle_booking_process($chat_id, $user_message, $user_state, $username, $token, $admin_chat_id);
-        send_telegram_message($token, $chat_id, $response);
-        exit;
-    }
-
-    // ====== ПРОВЕРКА НА КОМАНДЫ ЗАПИСИ НА ПОКАЗ ======
-    $booking_keywords = ['показ', 'запись', 'записаться', 'хочу посмотреть', 'онлайн показ', 'онлайн-показ', 'встретиться', 'встреча'];
-    $message_lower = mb_strtolower($user_message);
-    
-    foreach ($booking_keywords as $keyword) {
-        if (strpos($message_lower, $keyword) !== false) {
-            // Начинаем процесс записи на показ
-            save_user_state($chat_id, ['state' => 'booking_time', 'data' => ['apartment' => '']]);
-            send_telegram_message($token, $chat_id, "Отлично! Давайте запишем вас на показ. Укажите удобное для вас время:");
-            exit;
-        }
     }
 
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
@@ -610,15 +626,15 @@ if (
             if (is_null($studio_max_price) || $a['общая_сумма'] > $studio_max_price) $studio_max_price = $a['общая_сумма'];
         }
     }
-    $base_stats = "В базе сейчас " . count($apartments) . " квартир, из них студий — $studio_count, цены студий: от \$$studio_min_price до \$$studio_max_price.";
+    $base_stats = "В базе сейчас " . count($apartments) . " квартир, из них студий — $studio_count, цены студий: от \$studio_min_price до \$studio_max_price.";
 
-    // ====== СФОРМИРУЙ БАЗУ ДЛЯ ПРОМПТА ======
+    // ====== ФОРМИРУЕМ БАЗУ ДЛЯ ПРОМПТА ======
     $base_info = "";
     foreach ($apartments as $a) {
         $base_info .= "ЖК: {$a['жк']}, Этаж: {$a['этаж']}, №: {$a['номер']}, Площадь: {$a['площадь']} м², Вид: {$a['вид']}, Цена/м²: \${$a['цена_м2']}, Всего: \${$a['общая_сумма']}, Статус: {$a['статус']}\n";
     }
 
-    // ====== SYSTEM PROMPT ======
+    // ====== УЛУЧШЕННЫЙ SYSTEM PROMPT ======
     $greeting_instruction = $is_first_message ? 
         "ВАЖНО: Это первое сообщение от пользователя. Поздоровайся с ним по имени и СРАЗУ спроси про район интересов." : 
         "КРИТИЧЕСКИ ВАЖНО: Пользователь уже общался с тобой ранее. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО здороваться повторно! НЕ говори 'Привет', 'Рад тебя видеть' и подобное. Продолжай диалог сразу по существу, отвечая на его вопрос.";
@@ -627,12 +643,12 @@ if (
         [
             "role" => "system",
             "content" =>
-"Ты общаешься с пользователем по имени $user_name. Всегда обращайся к нему по этому имени — без изменений, переводов и русификаций. 
+"Ты общаешься с пользователем по имени $user_first_name. Всегда обращайся к нему по этому имени — без изменений, переводов и русификаций. 
 
 $greeting_instruction
 
 Ты умный, дерзкий и харизматичный AI-консультант по недвижимости в Батуми. 
-Тебя создал Сергей Корнаухов - брокер по недвижимости, предприниматель. Общайся в стиле Джордан Белфорд, но не говори что ты общаешься в его стиле.
+Тебя создал Сергей Корнаухов - брокер по недвижимости, предприниматель. Общайся естественно и живо, будь полезным помощником.
 
 ВАЖНО: НИКОГДА не показывай весь список квартир сразу! СНАЧАЛА выясни потребности клиента:
 - Какой район интересует?
@@ -640,7 +656,7 @@ $greeting_instruction
 - Сколько комнат нужно?
 - Рассрочка или сразу?
 
-После каждого ответа показывай 1-2 подходящих варианта.
+После каждого ответа показывай 1-3 подходящих варианта.
 
 ВАЖНО: В конце каждого сообщения с вариантами квартир добавляй фразу: 
 'Хотите записаться на показ? Просто напишите «хочу посмотреть» или «запись на показ»!'
@@ -664,6 +680,7 @@ $greeting_instruction
 — Задавай ТОЛЬКО ОДИН вопрос за раз
 — Выясняй потребности ПОЭТАПНО: сначала район, потом бюджет, потом комнаты
 — Говори кратко, с энтузиазмом, без повторов
+— Будь естественным консультантом, а не допрашивающим роботом
 
 Формат квартир по площади:
 — до 37 м² — студия
