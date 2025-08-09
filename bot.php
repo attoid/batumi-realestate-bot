@@ -83,13 +83,12 @@ if ($apartments_cache !== null && (time() - $cache_time) < 900) {
             
             if (!empty($apartments)) {
 
-    // Сохраняем в память
+// Сохраняем в память
     $apartments_cache = $apartments;
     $cache_time = time();
     error_log("Data saved to memory cache");
     return $apartments;
-}
-            } // закрытие if ($csv_data !== false...)
+            }
         } else {
             error_log("Failed URL $sheet_url: HTTP $http_code, Error: $error");
         }
