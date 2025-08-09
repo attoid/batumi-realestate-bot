@@ -1,4 +1,8 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+echo "TEST: PHP started\n";
+
 file_put_contents(__DIR__.'/test.log', date('c')." BOT.PHP ЗАПУСТИЛСЯ\n", FILE_APPEND);
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     echo "Бот работает!";
@@ -11,6 +15,15 @@ ini_set('display_errors', 1);
 $openai_key = getenv('OPENAI_API_KEY');
 $token = getenv('TELEGRAM_TOKEN');
 $admin_chat_id = "7770604629";
+
+if (!$openai_key) {
+    error_log("CRITICAL ERROR: OPENAI_API_KEY not set");
+    die("Configuration error");
+}
+if (!$token) {
+    error_log("CRITICAL ERROR: TELEGRAM_TOKEN not set");
+    die("Configuration error");
+}
 
 // ====== ХРАНИЛИЩА В ПАМЯТИ ВМЕСТО ФАЙЛОВ ======
 $chat_histories = [];
@@ -314,7 +327,10 @@ function get_last_subscription_check($chat_id) {
 function save_last_subscription_check($chat_id) {
     $dir = __DIR__ . '/subscription_checks';
     if (!file_exists($dir)) {
-        mkdir($dir, 0777, true);
+        if (!mkdir($dir, 0777, true) && !is_dir($dir)) {
+            error_log("Failed to create directory: $dir");
+            return false;
+        }
     }
     file_put_contents($dir . "/{$chat_id}.txt", time());
 }
