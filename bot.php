@@ -16,6 +16,16 @@ $token = getenv('TELEGRAM_TOKEN');
 $admin_chat_id = "7770604629";
 $LEADS_CHAT_ID = "-1002536751047";
 
+// --- Фолбэки, если на сервере нет mbstring ---
+if (!function_exists('mb_strtolower')) {
+    function mb_strtolower($s, $enc = 'UTF-8') { return strtolower($s); }
+}
+if (!function_exists('mb_stripos')) {
+    function mb_stripos($haystack, $needle, $offset = 0, $enc = 'UTF-8') {
+        return stripos($haystack, $needle, $offset);
+    }
+}
+
 if (!$openai_key) {
     error_log("CRITICAL ERROR: OPENAI_API_KEY not set");
     die("Configuration error");
