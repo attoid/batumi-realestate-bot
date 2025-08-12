@@ -430,6 +430,12 @@ function handle_booking_process($chat_id, $user_message, $user_state, $user_name
 $apartments = get_apartments_from_sheets();
 
 if (isset($update["message"])) {
+    // ====== Если бот в новой группе — покажет ID ======
+if (isset($update["message"]["chat"]["type"]) && in_array($update["message"]["chat"]["type"], ["group", "supergroup"])) {
+    $group_id = $update["message"]["chat"]["id"];
+    send_telegram_message($token, $update["message"]["chat"]["id"], "ID этой группы: <b>{$group_id}</b>", null, 'HTML');
+}
+
     $chat_id = $update["message"]["chat"]["id"];
     $user_message = trim($update["message"]["text"] ?? "");
     $user_name = $update["message"]["from"]["first_name"] ?? "друг";
@@ -445,6 +451,43 @@ if (isset($update["message"])) {
     $booking_keywords = ['показ', 'запись', 'записаться', 'хочу посмотреть', 'онлайн показ', 'онлайн-показ', 'встретиться', 'встреча'];
     $message_lower = mb_strtolower($user_message);
 
+    // ====== ТРИГГЕР ЗАПИСИ НА ПОКАЗ ======
+$booking_triggers = [
+    'хочу посмотреть',
+    'запись на показ',
+    'записаться',
+    'онлайн показ',
+    'онлайн-показ',
+    'встреча',
+    'назначить показ',
+    'посмотреть квартиру',
+    'хочу запись',
+    'хочу на показ'
+];
+
+$should_start_booking = false;
+foreach ($booking_triggers as $kw) {
+    if (mb_stripos($message_lower, $kw) !== false) {
+        $should_start_booking = true;
+        break;
+    }
+}
+
+if ($should_start_booking && $user_state['state'] === 'normal') {
+    save_user_state($chat_id, [
+        'state' => 'booking_time',
+        'data'  => []  // сюда потом добавим контекст
+    ]);
+
+    send_telegram_message($token, $chat_id,
+        "Отлично! Запишу вас на показ.\n\n<u>Шаг 1 из 2</u> — напишите удобные <b>дату и время (Тбилиси)</b>.\nНапример: «13 августа, 15:00»",
+        null, 'HTML'
+    );
+    exit;
+}
+
+
+    
     // ====== ДЕБАГ - только в логи, не пользователю ======
     if (!empty($apartments)) {
         error_log("DEBUG: Database loaded successfully - " . count($apartments) . " apartments available");
@@ -472,12 +515,78 @@ if (isset($update["message"])) {
         exit;
     }
     
-    // ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
-    if ($user_state['state'] !== 'normal') {
-        $response = handle_booking_process($chat_id, $user_message, $user_state, $username, $token, $admin_chat_id);
-        send_telegram_message($token, $chat_id, $response);
+ // ====== ОБРАБОТКА ЗАПИСИ НА ПОКАЗ ======
+if ($user_state['state'] !== 'normal') {
+
+    // ШАГ 1 — получили дату/время, теперь просим телефон
+    if ($user_state['state'] === 'booking_time') {
+        $data = $user_state['data'];
+        $data['time'] = $user_message;
+        save_user_state($chat_id, ['state' => 'booking_phone', 'data' => $data]);
+
+        $kb = [
+            "keyboard" => [[["text" => "Поделиться телефоном (WA)", "request_contact" => true]]],
+            "resize_keyboard" => true,
+            "one_time_keyboard" => true
+        ];
+        send_telegram_message($token, $chat_id,
+            "Спасибо! Теперь отправьте номер телефона для WhatsApp (или нажмите кнопку).",
+            $kb, 'HTML'
+        );
         exit;
     }
+
+    // ШАГ 2 — получили телефон, отправляем заявку тебе
+    if ($user_state['state'] === 'booking_phone') {
+        $contact_phone = $update["message"]["contact"]["phone_number"] ?? null;
+        $phone = $contact_phone ?: $user_message;
+
+        $digits = preg_replace('/\D+/', '', $phone);
+        if (strlen($digits) < 9) {
+            $kb = [
+                "keyboard" => [[["text" => "Поделиться телефоном (WA)", "request_contact" => true]]],
+                "resize_keyboard" => true,
+                "one_time_keyboard" => true
+            ];
+            send_telegram_message($token, $chat_id,
+                "Не похоже на номер. Пришлите в формате +9955… или нажмите кнопку.",
+                $kb, 'HTML'
+            );
+            exit;
+        }
+
+        $data = $user_state['data'];
+        $data['phone'] = $phone;
+
+        $wa_link = "https://wa.me/" . $digits;
+        $tg_link = "tg://user?id={$chat_id}";
+
+        $lead_text =
+            "🏠 <b>Новая запись на показ</b>\n\n".
+            "👤 Клиент: @$username (ID: <code>$chat_id</code>)\n".
+            "📅 Время: <b>{$data['time']}</b>\n".
+            "📱 Телефон (WA): <b>{$phone}</b>\n".
+            "🔗 Связь: <a href=\"$tg_link\">TG</a> | <a href=\"$wa_link\">WA</a>";
+
+        // Отправляем тебе
+        send_telegram_message($token, $admin_chat_id, $lead_text);
+
+        // Сообщаем клиенту
+        send_telegram_message($token, $chat_id,
+            "Готово! Я записал вас на показ на {$data['time']} ✅",
+            ["remove_keyboard" => true], 'HTML'
+        );
+
+        // Сбрасываем состояние
+        save_user_state($chat_id, ['state' => 'normal', 'data' => []]);
+        exit;
+    }
+
+    // На случай, если что-то пошло не так
+    send_telegram_message($token, $chat_id, "Что-то пошло не так. Напишите «запись на показ», начнём заново.");
+    exit;
+}
+
 
     // ====== ПОЛУЧАЕМ ИСТОРИЮ ЧАТА ======
     $history = get_chat_history($chat_id);
