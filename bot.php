@@ -569,7 +569,7 @@ if ($user_state['state'] !== 'normal') {
             "🔗 Связь: <a href=\"$tg_link\">TG</a> | <a href=\"$wa_link\">WA</a>";
 
         // Отправляем тебе
-        send_telegram_message($token, $admin_chat_id, $lead_text);
+        send_telegram_message($token, "-1002536751047", $lead_text);
 
         // Сообщаем клиенту
         send_telegram_message($token, $chat_id,
