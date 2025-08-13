@@ -686,5 +686,5 @@ if (is_dir($lock_dir)) {
             unlink($file);
         }
     }
-}
+
 ?>
