@@ -104,14 +104,14 @@ if ($apartments_cache !== null && (time() - $cache_time) < 900) {
             $apartments = parse_csv_to_apartments($csv_data);
             error_log("Parsed " . count($apartments) . " apartments from CSV");
             
-            if (!empty($apartments)) {
-
-// Сохраняем в память
+if (!empty($apartments)) {
+    // Сохраняем в память
     $apartments_cache = $apartments;
     $cache_time = time();
     error_log("Data saved to memory cache");
     return $apartments;
-        } else {
+}  // ← закрытие if (!empty($apartments))
+        } else {  // ← это else от if ($csv_data !== false && $http_code === 200)
             error_log("Failed URL $sheet_url: HTTP $http_code, Error: $error");
         }
     } // закрытие foreach
@@ -685,5 +685,5 @@ if (is_dir($lock_dir)) {
             unlink($file);
         }
     }
-
+}
 ?>
