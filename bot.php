@@ -111,7 +111,6 @@ if ($apartments_cache !== null && (time() - $cache_time) < 900) {
     $cache_time = time();
     error_log("Data saved to memory cache");
     return $apartments;
-            }
         } else {
             error_log("Failed URL $sheet_url: HTTP $http_code, Error: $error");
         }
