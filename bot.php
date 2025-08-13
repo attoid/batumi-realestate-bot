@@ -8,11 +8,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     exit;
 }
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
-$openai_key = getenv('OPENAI_API_KEY');
-$token = getenv('TELEGRAM_TOKEN');
+// Получаем переменные окружения (для Render используем $_ENV)
+$openai_key = $_ENV['OPENAI_API_KEY'] ?? getenv('OPENAI_API_KEY') ?? null;
+$token = $_ENV['TELEGRAM_TOKEN'] ?? getenv('TELEGRAM_TOKEN') ?? null;
 $admin_chat_id = "7770604629";
 $LEADS_CHAT_ID = "-1002536751047";
 
@@ -26,16 +24,20 @@ if (!function_exists('mb_stripos')) {
     }
 }
 
+// Проверяем наличие ключей
 if (!$openai_key) {
     error_log("CRITICAL ERROR: OPENAI_API_KEY not set");
-    die("Configuration error");
+    echo "Error: OPENAI_API_KEY not configured";
+    exit;
 }
 if (!$token) {
     error_log("CRITICAL ERROR: TELEGRAM_TOKEN not set");
-    die("Configuration error");
+    echo "Error: TELEGRAM_TOKEN not configured";
+    exit;
 }
 
 // ====== ХРАНИЛИЩА В ПАМЯТИ ВМЕСТО ФАЙЛОВ ======
+
 $chat_histories = [];
 $user_states = [];
 $apartments_cache = null;
